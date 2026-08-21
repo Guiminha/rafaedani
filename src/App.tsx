@@ -90,7 +90,7 @@ export default function App() {
   };
 
   const coverPhoto = photos.find(p => p.url_original.includes("RafaeDani.webp"));
-  const coverImageUrl = coverPhoto ? coverPhoto.url_original : "https://images.unsplash.com/photo-1511795409834-ef04bbd61622?auto=format&fit=crop&q=80&w=2070";
+  const coverImageUrl = coverPhoto ? coverPhoto.url_original : "https://s3.danierafa.online/rafa-dani/RafaeDani.webp";
   const galleryPhotos = photos.filter(p => !p.url_original.includes("RafaeDani.webp"));
 
   const openLightbox = (index: number) => setLightboxIndex(index);
@@ -121,7 +121,7 @@ export default function App() {
         <img 
           src={coverImageUrl} 
           alt="Capa do Casamento" 
-          className="absolute inset-0 w-full h-full object-cover z-0"
+          className="absolute inset-0 w-full h-full object-cover object-top z-0"
         />
         <div className="absolute inset-0 z-20 flex items-end justify-center text-white drop-shadow-lg pb-6 sm:pb-8">
           <div className="flex flex-col items-center">
