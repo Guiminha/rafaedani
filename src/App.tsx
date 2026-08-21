@@ -19,8 +19,10 @@ export default function App() {
   const [isModalOpen, setIsModalOpen] = useState(false);
   const [uploading, setUploading] = useState(false);
   const [uploadStatus, setUploadStatus] = useState<"idle" | "success" | "error">("idle");
-  const [selectedFile, setSelectedFile] = useState<File | null>(null);
-  
+  const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
+  const [overallProgress, setOverallProgress] = useState(0);
+  const [errorMessage, setErrorMessage] = useState("");
+
   // Lightbox state
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
@@ -44,46 +46,76 @@ export default function App() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      setSelectedFile(e.target.files[0]);
+      setSelectedFiles(Array.from(e.target.files));
       setUploadStatus("idle");
+      setOverallProgress(0);
     }
   };
 
+  const uploadFileWithProgress = (file: File): Promise<Foto> => {
+    return new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("POST", "/api/upload");
+      
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          try {
+            const res = JSON.parse(xhr.responseText);
+            if (res.error) {
+              reject(new Error(res.error));
+            } else {
+              resolve(res.foto);
+            }
+          } catch (err) {
+            reject(new Error("Invalid response format"));
+          }
+        } else {
+          try {
+            const res = JSON.parse(xhr.responseText);
+            reject(new Error(res.error || "Upload failed with status " + xhr.status));
+          } catch {
+            reject(new Error("Upload failed with status " + xhr.status));
+          }
+        }
+      };
+      
+      xhr.onerror = () => reject(new Error("Network error"));
+      
+      const formData = new FormData();
+      formData.append("file", file);
+      xhr.send(formData);
+    });
+  };
+
   const handleUpload = async () => {
-    if (!selectedFile) return;
+    if (selectedFiles.length === 0) return;
     
     setUploading(true);
     setUploadStatus("idle");
+    setOverallProgress(0);
+    setErrorMessage("");
     
-    const formData = new FormData();
-    formData.append("file", selectedFile);
-
+    const newPhotos: Foto[] = [];
+    
     try {
-      const res = await fetch("/api/upload", {
-        method: "POST",
-        body: formData,
-      });
-
-      if (res.ok) {
-        const contentType = res.headers.get("content-type");
-        if (contentType && contentType.includes("application/json")) {
-          const data = await res.json();
-          setUploadStatus("success");
-          setSelectedFile(null);
-          // Add new photo to the beginning of the list
-          setPhotos((prev) => [data.foto, ...prev]);
-          setTimeout(() => setIsModalOpen(false), 2000);
-        } else {
-          const text = await res.text();
-          console.error("Servidor retornou formato inválido. Pode estar reiniciando. Resposta:", text.substring(0, 200));
-          setUploadStatus("error");
-        }
-      } else {
-        setUploadStatus("error");
+      for (let i = 0; i < selectedFiles.length; i++) {
+        const file = selectedFiles[i];
+        const foto = await uploadFileWithProgress(file);
+        newPhotos.push(foto);
+        setOverallProgress(Math.round(((i + 1) / selectedFiles.length) * 100));
       }
-    } catch (err) {
+
+      setUploadStatus("success");
+      setSelectedFiles([]);
+      // Add new photos to the beginning of the list
+      setPhotos((prev) => [...newPhotos.reverse(), ...prev]);
+      
+      // Fechar o modal imediatamente após o envio terminar com sucesso
+      setIsModalOpen(false);
+    } catch (err: any) {
       console.error("Upload failed", err);
       setUploadStatus("error");
+      setErrorMessage(err.message || "Erro desconhecido");
     } finally {
       setUploading(false);
     }
@@ -198,7 +230,7 @@ export default function App() {
             onClick={() => {
               setIsModalOpen(true);
               setUploadStatus("idle");
-              setSelectedFile(null);
+              setSelectedFiles([]);
             }}
             className="w-full h-14 bg-[#3CA0CC] hover:bg-[#348db4] text-white font-bold rounded-2xl shadow-lg shadow-[#3CA0CC]/30 active:scale-95 transition-all text-lg flex items-center justify-center gap-2"
           >
@@ -227,45 +259,69 @@ export default function App() {
             <div className="mb-6">
               <label 
                 htmlFor="file-upload"
-                className="border-2 border-dashed border-neutral-700 rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer hover:border-[#3CA0CC] hover:bg-[#3CA0CC]/10 transition-colors group"
+                className="border-2 border-dashed border-neutral-700 rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer hover:border-[#3CA0CC] hover:bg-[#3CA0CC]/10 transition-colors group relative overflow-hidden"
               >
+                {uploading && (
+                  <div 
+                    className="absolute bottom-0 left-0 h-1 bg-[#3CA0CC] transition-all duration-300 ease-out" 
+                    style={{ width: `${overallProgress}%` }}
+                  ></div>
+                )}
                 <Camera className="w-10 h-10 text-[#3CA0CC]/70 group-hover:text-[#3CA0CC] transition-colors mb-3" />
                 <span className="text-sm text-neutral-400 text-center">
-                  {selectedFile ? selectedFile.name : "Toque para escolher uma foto"}
+                  {selectedFiles.length > 0 
+                    ? selectedFiles.length === 1 
+                      ? selectedFiles[0].name 
+                      : `${selectedFiles.length} fotos selecionadas`
+                    : "Toque para escolher fotos"}
                 </span>
                 <input 
                   id="file-upload" 
                   type="file" 
                   accept="image/*" 
+                  multiple
                   className="hidden" 
                   onChange={handleFileChange}
+                  disabled={uploading}
                 />
               </label>
+              {uploading && (
+                <div className="mt-2 text-center text-xs text-neutral-500">
+                  Enviando... {overallProgress}%
+                </div>
+              )}
             </div>
 
             {uploadStatus === "success" && (
               <div className="mb-6 p-3 bg-green-900/30 border border-green-800 text-green-400 rounded-lg flex items-center gap-2 text-sm">
                 <CheckCircle2 className="w-5 h-5" />
-                Foto enviada com sucesso!
+                Enviado com sucesso!
               </div>
             )}
             
             {uploadStatus === "error" && (
-              <div className="mb-6 p-3 bg-red-900/30 border border-red-800 text-red-400 rounded-lg flex items-center gap-2 text-sm">
-                <AlertCircle className="w-5 h-5" />
-                Erro ao enviar. Tente novamente.
+              <div className="mb-6 p-3 bg-red-900/30 border border-red-800 text-red-400 rounded-lg flex flex-col gap-2 text-sm">
+                <div className="flex items-center gap-2">
+                  <AlertCircle className="w-5 h-5" />
+                  Erro ao enviar. Tente novamente.
+                </div>
+                {errorMessage && (
+                  <div className="text-xs text-red-300 opacity-80 mt-1 break-words">
+                    Detalhes: {errorMessage}
+                  </div>
+                )}
               </div>
             )}
 
             <button 
               onClick={handleUpload}
-              disabled={!selectedFile || uploading || uploadStatus === "success"}
+              disabled={selectedFiles.length === 0 || uploading || uploadStatus === "success"}
               className="w-full bg-white text-black hover:bg-neutral-200 disabled:bg-neutral-800 disabled:text-neutral-500 font-semibold py-4 px-6 rounded-xl flex items-center justify-center gap-2 transition-colors"
             >
               {uploading ? (
                 <>
                   <div className="w-5 h-5 border-2 border-white/30 border-t-white rounded-full animate-spin" />
-                  Enviando...
+                  Enviando ({overallProgress}%)
                 </>
               ) : uploadStatus === "success" ? (
                 "Enviado"

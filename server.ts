@@ -189,23 +189,9 @@ app.post("/api/upload", upload.single("file"), async (req, res): Promise<any> =>
     };
 
     res.status(200).json({ success: true, foto: responseFoto });
-  } catch (err) {
-    console.warn("Upload Route Catch Warning (Fallback activated):", err);
-    // Fallback: use thumbnail base64 to prevent huge payloads
-    const uniqueId = uuidv4();
-    const thumbB64 = typeof thumbnailBuffer !== 'undefined'
-      ? `data:image/webp;base64,${thumbnailBuffer.toString("base64")}`
-      : "https://images.unsplash.com/photo-1519741497674-611481863552?auto=format&fit=crop&q=80&w=400";
-
-    res.status(200).json({ 
-      success: true, 
-      foto: {
-        id: uniqueId,
-        url_original: thumbB64,
-        url_thumbnail: thumbB64,
-        data_upload: new Date().toISOString()
-      } 
-    });
+  } catch (err: any) {
+    console.error("Upload Route Catch Error:", err);
+    res.status(500).json({ error: err.message || "Failed to process photo" });
   }
 });
 
