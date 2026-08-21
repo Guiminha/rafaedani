@@ -12,7 +12,7 @@ import dotenv from "dotenv";
 dotenv.config();
 
 const app = express();
-const PORT = 3000;
+const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(cors());
 app.use(express.json());
@@ -222,7 +222,7 @@ app.get("/api/photos", async (req, res): Promise<any> => {
       await supabase.from("fotos").delete().eq("id", "e7756ac4-47d6-4561-bed6-3a0c7ad5804d");
     }
 
-    const { data, error } = await (supabase as any)
+    let { data, error } = await (supabase as any)
       .from("fotos")
       .select("*")
       .order("data_upload", { ascending: false });
@@ -232,18 +232,42 @@ app.get("/api/photos", async (req, res): Promise<any> => {
       return res.status(200).json([]);
     }
 
+    if (!data) data = [];
+
+    // Ensure RafaeDani.webp cover photo is registered in DB so it's never lost
+    const hasCover = data.some((f: any) => f.url_original && f.url_original.includes("RafaeDani.webp"));
+    if (!hasCover && supabase) {
+      const coverId = "rafae-dani-cover-id-001";
+      const coverRecord = {
+        id: coverId,
+        url_original: "RafaeDani.webp",
+        url_thumbnail: "RafaeDani.webp",
+        data_upload: new Date("2026-08-21T15:00:00.000Z").toISOString(),
+      };
+      await (supabase as any).from("fotos").upsert([coverRecord], { onConflict: 'id' }).catch(() => {});
+      data.unshift(coverRecord);
+    }
+
     const currentAppVersionStartDate = new Date("2026-08-21T14:40:00.000Z"); // Ignore photos before this
 
     const processedData = data
-      .filter((foto: any) => new Date(foto.data_upload) > currentAppVersionStartDate)
+      .filter((foto: any) => foto.url_original?.includes("RafaeDani.webp") || new Date(foto.data_upload) > currentAppVersionStartDate)
       .map((foto) => {
       const isAbsoluteOriginal = foto.url_original?.startsWith("http");
       const isAbsoluteThumbnail = foto.url_thumbnail?.startsWith("http");
       
+      let orig = isAbsoluteOriginal ? foto.url_original : `${publicBaseUrl}/${foto.url_original}`;
+      let thumb = isAbsoluteThumbnail ? foto.url_thumbnail : `${publicBaseUrl}/${foto.url_thumbnail}`;
+      
+      if (foto.url_original === "RafaeDani.webp") {
+        orig = `${publicBaseUrl}/RafaeDani.webp`;
+        thumb = `${publicBaseUrl}/RafaeDani.webp`;
+      }
+
       return {
         ...foto,
-        url_original: isAbsoluteOriginal ? foto.url_original : `${publicBaseUrl}/${foto.url_original}`,
-        url_thumbnail: isAbsoluteThumbnail ? foto.url_thumbnail : `${publicBaseUrl}/${foto.url_thumbnail}`,
+        url_original: orig,
+        url_thumbnail: thumb,
       };
     });
 

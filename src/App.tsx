@@ -89,20 +89,24 @@ export default function App() {
     }
   };
 
+  const coverPhoto = photos.find(p => p.url_original.includes("RafaeDani.webp"));
+  const coverImageUrl = coverPhoto ? coverPhoto.url_original : "https://images.unsplash.com/photo-1511795409834-ef04bbd61622?auto=format&fit=crop&q=80&w=2070";
+  const galleryPhotos = photos.filter(p => !p.url_original.includes("RafaeDani.webp"));
+
   const openLightbox = (index: number) => setLightboxIndex(index);
   const closeLightbox = () => setLightboxIndex(null);
   
   const showPrevPhoto = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (lightboxIndex !== null) {
-      setLightboxIndex(lightboxIndex === 0 ? photos.length - 1 : lightboxIndex - 1);
+      setLightboxIndex(lightboxIndex === 0 ? galleryPhotos.length - 1 : lightboxIndex - 1);
     }
   };
 
   const showNextPhoto = (e: React.MouseEvent) => {
     e.stopPropagation();
     if (lightboxIndex !== null) {
-      setLightboxIndex(lightboxIndex === photos.length - 1 ? 0 : lightboxIndex + 1);
+      setLightboxIndex(lightboxIndex === galleryPhotos.length - 1 ? 0 : lightboxIndex + 1);
     }
   };
 
@@ -115,7 +119,7 @@ export default function App() {
       <header className="relative h-64 sm:h-80 w-full bg-neutral-800 shrink-0">
         <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/20 to-transparent z-10"></div>
         <img 
-          src="https://images.unsplash.com/photo-1511795409834-ef04bbd61622?auto=format&fit=crop&q=80&w=2070" 
+          src={coverImageUrl} 
           alt="Capa do Casamento" 
           className="absolute inset-0 w-full h-full object-cover z-0"
         />
@@ -149,14 +153,14 @@ export default function App() {
           <div className="flex justify-center py-20">
             <div className="animate-spin rounded-full h-10 w-10 border-t-2 border-b-2 border-[#3CA0CC]"></div>
           </div>
-        ) : photos.length === 0 ? (
+        ) : galleryPhotos.length === 0 ? (
           <div className="text-center py-20 bg-neutral-900/50 rounded-xl border border-neutral-800 backdrop-blur-sm">
             <Camera className="w-12 h-12 text-neutral-600 mx-auto mb-3" />
             <p className="text-neutral-400 text-sm">Nenhuma foto ainda. Seja o primeiro a compartilhar!</p>
           </div>
         ) : (
           <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 gap-2 content-start h-full">
-            {photos.map((foto, index) => (
+            {galleryPhotos.map((foto, index) => (
               <div 
                 key={foto.id} 
                 className="aspect-square relative overflow-hidden bg-neutral-800 cursor-pointer group rounded-lg ring-1 ring-white/5"

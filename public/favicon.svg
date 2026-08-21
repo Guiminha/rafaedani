@@ -1,0 +1,18 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 32 32">
+  <defs>
+    <linearGradient id="goldGrad" x1="0%" y1="0%" x2="100%" y2="100%">
+      <stop offset="0%" stop-color="#D97706"/>
+      <stop offset="40%" stop-color="#FDE047"/>
+      <stop offset="70%" stop-color="#F59E0B"/>
+      <stop offset="100%" stop-color="#B45309"/>
+    </linearGradient>
+  </defs>
+  <!-- Left Wedding Ring -->
+  <circle cx="12" cy="18" r="7.5" fill="none" stroke="url(#goldGrad)" stroke-width="2.5"/>
+  <!-- Right Wedding Ring -->
+  <circle cx="20" cy="14" r="7.5" fill="none" stroke="url(#goldGrad)" stroke-width="2.5"/>
+  <!-- Diamond gem on right ring -->
+  <path d="M20 5.5 L22.2 3 L20 0.8 L17.8 3 Z" fill="#93C5FD" stroke="#3B82F6" stroke-width="0.5"/>
+  <circle cx="20" cy="3" r="0.8" fill="#FFFFFF"/>
+  <path d="M12 10.5 A 7.5 7.5 0 0 1 15 11.2" stroke="url(#goldGrad)" stroke-width="2.5" fill="none"/>
+</svg>
