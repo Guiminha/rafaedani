@@ -1,0 +1,6 @@
+{
+  "name": "Danielle & Rafal Casamento",
+  "description": "Plataforma de compartilhamento de fotos para o casamento de Danielle e Rafal.",
+  "requestFramePermissions": [],
+  "majorCapabilities": ["MAJOR_CAPABILITY_SERVER_SIDE_GEMINI_API"]
+}
