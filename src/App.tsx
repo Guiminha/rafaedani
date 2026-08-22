@@ -5,6 +5,7 @@
 
 import React, { useState, useEffect } from "react";
 import { Camera, X, Upload, CheckCircle2, AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
+import imageCompression from "browser-image-compression";
 
 interface Foto {
   id: string;
@@ -12,6 +13,15 @@ interface Foto {
   url_thumbnail: string;
   data_upload: string;
 }
+
+const getDeviceId = () => {
+  let id = localStorage.getItem("deviceId");
+  if (!id) {
+    id = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2);
+    localStorage.setItem("deviceId", id);
+  }
+  return id;
+};
 
 export default function App() {
   const [photos, setPhotos] = useState<Foto[]>([]);
@@ -46,16 +56,55 @@ export default function App() {
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
-      setSelectedFiles(Array.from(e.target.files));
+      const files = Array.from(e.target.files);
+      if (files.length > 5) {
+        alert("Você pode selecionar no máximo 5 arquivos por vez.");
+        setSelectedFiles(files.slice(0, 5));
+      } else {
+        setSelectedFiles(files);
+      }
       setUploadStatus("idle");
       setOverallProgress(0);
     }
   };
 
-  const uploadFileWithProgress = (file: File): Promise<Foto> => {
+  const uploadVideoWithProgress = async (file: File, deviceId: string): Promise<Foto> => {
+    const res = await fetch("/api/video/presigned", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ filename: file.name, contentType: file.type, deviceId })
+    });
+    const data = await res.json();
+    if (!res.ok) throw new Error(data.error || "Failed to get upload URL");
+    
+    await new Promise((resolve, reject) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", data.uploadUrl);
+      xhr.setRequestHeader("Content-Type", file.type);
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) resolve(true);
+        else reject(new Error("Video upload failed with status " + xhr.status));
+      };
+      xhr.onerror = () => reject(new Error("Network error during video upload"));
+      xhr.send(file);
+    });
+    
+    const finalizeRes = await fetch("/api/video/finalize", {
+      method: "POST",
+      headers: { "Content-Type": "application/json" },
+      body: JSON.stringify({ id: data.id, key: data.key, deviceId })
+    });
+    const finalizeData = await finalizeRes.json();
+    if (!finalizeRes.ok) throw new Error(finalizeData.error || "Failed to finalize video");
+    
+    return finalizeData.foto;
+  };
+
+  const uploadFileWithProgress = (file: File, deviceId: string): Promise<Foto> => {
     return new Promise((resolve, reject) => {
       const xhr = new XMLHttpRequest();
       xhr.open("POST", "/api/upload");
+      xhr.setRequestHeader("x-device-id", deviceId);
       
       xhr.onload = () => {
         if (xhr.status >= 200 && xhr.status < 300) {
@@ -96,12 +145,41 @@ export default function App() {
     setErrorMessage("");
     
     const newPhotos: Foto[] = [];
+    const deviceId = getDeviceId();
     
     try {
       for (let i = 0; i < selectedFiles.length; i++) {
         const file = selectedFiles[i];
-        const foto = await uploadFileWithProgress(file);
-        newPhotos.push(foto);
+        
+        if (file.type.startsWith("video/")) {
+          if (file.size > 100 * 1024 * 1024) {
+            throw new Error(`O vídeo ${file.name} ultrapassa o limite de 100MB.`);
+          }
+          const foto = await uploadVideoWithProgress(file, deviceId);
+          newPhotos.push(foto);
+        } else if (file.type.startsWith("image/")) {
+          let fileToUpload = file;
+          try {
+            // Client-side compression to prevent server 503 OOM crashes
+            const options = {
+              maxSizeMB: 3,
+              maxWidthOrHeight: 1920,
+              useWebWorker: true,
+              fileType: "image/webp"
+            };
+            fileToUpload = await imageCompression(file, options);
+          } catch (compressErr) {
+            console.warn("Client compression failed, sending original", compressErr);
+            if (file.size > 5 * 1024 * 1024) {
+              throw new Error(`Não foi possível otimizar a imagem ${file.name} no seu aparelho. Tente outra foto.`);
+            }
+          }
+          const foto = await uploadFileWithProgress(fileToUpload, deviceId);
+          newPhotos.push(foto);
+        } else {
+          throw new Error("Formato de arquivo não suportado.");
+        }
+        
         setOverallProgress(Math.round(((i + 1) / selectedFiles.length) * 100));
       }
 
@@ -198,24 +276,42 @@ export default function App() {
                 className="aspect-square relative overflow-hidden bg-neutral-800 cursor-pointer group rounded-lg ring-1 ring-white/5"
                 onClick={() => openLightbox(index)}
               >
-                <img 
-                  src={foto.url_thumbnail} 
-                  alt="Momento do casamento" 
-                  className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                  loading="lazy"
-                  onError={(e) => {
-                    const target = e.currentTarget;
-                    target.style.display = 'none';
-                    target.parentElement?.classList.add('flex', 'items-center', 'justify-center');
-                    target.parentElement?.setAttribute('title', 'Imagem bloqueada pelo MinIO (Bucket não é público)');
-                    
-                    const errorIcon = document.createElement('div');
-                    errorIcon.className = 'text-xs text-center text-neutral-500 p-2';
-                    errorIcon.innerHTML = '🔒<br/>Privado';
-                    target.parentElement?.appendChild(errorIcon);
-                  }}
-                />
-                <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors duration-300" />
+                {foto.url_original.match(/\.(mp4|mov|webm)$/i) ? (
+                  <>
+                    <video 
+                      src={foto.url_thumbnail} 
+                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 pointer-events-none"
+                      muted
+                      playsInline
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors duration-300">
+                      <div className="w-10 h-10 rounded-full bg-black/50 flex items-center justify-center backdrop-blur-sm shadow-xl">
+                        <div className="w-0 h-0 border-y-[6px] border-y-transparent border-l-[10px] border-l-white ml-1"></div>
+                      </div>
+                    </div>
+                  </>
+                ) : (
+                  <>
+                    <img 
+                      src={foto.url_thumbnail} 
+                      alt="Momento do casamento" 
+                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                      loading="lazy"
+                      onError={(e) => {
+                        const target = e.currentTarget;
+                        target.style.display = 'none';
+                        target.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                        target.parentElement?.setAttribute('title', 'Imagem bloqueada pelo MinIO (Bucket não é público)');
+                        
+                        const errorIcon = document.createElement('div');
+                        errorIcon.className = 'text-xs text-center text-neutral-500 p-2';
+                        errorIcon.innerHTML = '🔒<br/>Privado';
+                        target.parentElement?.appendChild(errorIcon);
+                      }}
+                    />
+                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors duration-300" />
+                  </>
+                )}
               </div>
             ))}
           </div>
@@ -278,7 +374,7 @@ export default function App() {
                 <input 
                   id="file-upload" 
                   type="file" 
-                  accept="image/*" 
+                  accept="image/*,video/mp4,video/quicktime,video/webm" 
                   multiple
                   className="hidden" 
                   onChange={handleFileChange}
@@ -360,23 +456,33 @@ export default function App() {
             <ChevronRight className="w-8 h-8" />
           </button>
 
-          <img 
-            src={photos[lightboxIndex].url_original} 
-            alt="Original" 
-            className="max-w-full max-h-[90vh] object-contain select-none"
-            onClick={(e) => e.stopPropagation()} // Prevent closing when clicking the image
-            onError={(e) => {
-              const target = e.currentTarget;
-              target.style.display = 'none';
-              const parent = target.parentElement;
-              if (parent && !parent.querySelector('.error-msg')) {
-                const errorMsg = document.createElement('div');
-                errorMsg.className = 'error-msg text-white text-center p-8 bg-neutral-900 rounded-lg';
-                errorMsg.innerHTML = '<h3>🔒 Imagem Bloqueada</h3><p class="text-neutral-400 mt-2">O bucket do seu MinIO não permite leitura pública.</p>';
-                parent.appendChild(errorMsg);
-              }
-            }}
-          />
+          {photos[lightboxIndex].url_original.match(/\.(mp4|mov|webm)$/i) ? (
+            <video 
+              src={photos[lightboxIndex].url_original} 
+              controls
+              autoPlay
+              className="max-w-full max-h-[90vh] object-contain select-none"
+              onClick={(e) => e.stopPropagation()}
+            />
+          ) : (
+            <img 
+              src={photos[lightboxIndex].url_original} 
+              alt="Original" 
+              className="max-w-full max-h-[90vh] object-contain select-none"
+              onClick={(e) => e.stopPropagation()} // Prevent closing when clicking the image
+              onError={(e) => {
+                const target = e.currentTarget;
+                target.style.display = 'none';
+                const parent = target.parentElement;
+                if (parent && !parent.querySelector('.error-msg')) {
+                  const errorMsg = document.createElement('div');
+                  errorMsg.className = 'error-msg text-white text-center p-8 bg-neutral-900 rounded-lg';
+                  errorMsg.innerHTML = '<h3>🔒 Imagem Bloqueada</h3><p class="text-neutral-400 mt-2">O bucket do seu MinIO não permite leitura pública.</p>';
+                  parent.appendChild(errorMsg);
+                }
+              }}
+            />
+          )}
           
           {/* Counter */}
           <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-white/60 text-sm font-medium tracking-wide">
