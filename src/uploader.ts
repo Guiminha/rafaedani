@@ -50,6 +50,18 @@ export const createThumbnail = (file: File): Promise<Blob> => {
   });
 };
 
+const safeJsonParse = async (res: Response): Promise<any> => {
+  const text = await res.text();
+  try {
+    return JSON.parse(text);
+  } catch {
+    if (res.status === 503 || res.status === 502 || res.status === 504) {
+      throw new Error("O servidor Node.js na Hostinger está temporariamente indisponível ou iniciando (Status 503). Verifique se o aplicativo Node.js está Ativo no painel da Hostinger.");
+    }
+    throw new Error(`Resposta inválida do servidor (HTTP ${res.status}).`);
+  }
+};
+
 /**
  * Uploads a photo directly to MinIO with 100% original resolution & quality,
  * plus a lightweight thumbnail for fast mobile grid performance.
@@ -75,7 +87,7 @@ export const uploadPhotoDirect = async (
     }),
   });
 
-  const presignedData = await presignedRes.json();
+  const presignedData = await safeJsonParse(presignedRes);
   if (!presignedRes.ok) {
     throw new Error(presignedData.error || "Falha ao obter autorização de envio.");
   }
@@ -97,7 +109,7 @@ export const uploadPhotoDirect = async (
       if (xhr.status >= 200 && xhr.status < 300) {
         resolve();
       } else {
-        reject(new Error(`Falha no upload do arquivo original (HTTP ${xhr.status})`));
+        reject(new Error(`Falha no upload do arquivo original para o MinIO (HTTP ${xhr.status})`));
       }
     };
 
@@ -143,7 +155,7 @@ export const uploadPhotoDirect = async (
     }),
   });
 
-  const finalizeData = await finalizeRes.json();
+  const finalizeData = await safeJsonParse(finalizeRes);
   if (!finalizeRes.ok) {
     throw new Error(finalizeData.error || "Falha ao registrar a foto no banco de dados.");
   }
@@ -170,7 +182,7 @@ export const uploadVideoDirect = async (
     }),
   });
 
-  const data = await res.json();
+  const data = await safeJsonParse(res);
   if (!res.ok) {
     throw new Error(data.error || "Falha ao obter autorização para o vídeo.");
   }
@@ -206,7 +218,7 @@ export const uploadVideoDirect = async (
     body: JSON.stringify({ id: data.id, key: data.key, deviceId }),
   });
 
-  const finalizeData = await finalizeRes.json();
+  const finalizeData = await safeJsonParse(finalizeRes);
   if (!finalizeRes.ok) {
     throw new Error(finalizeData.error || "Falha ao registrar o vídeo no banco de dados.");
   }

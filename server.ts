@@ -3,26 +3,43 @@ import os from "os";
 import express from "express";
 import path from "path";
 import multer from "multer";
-import sharp from "sharp";
 import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createClient } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
-import { createServer as createViteServer } from "vite";
 import cors from "cors";
 import dotenv from "dotenv";
 
 dotenv.config();
 
-// Tune sharp to not exhaust memory in constrained environments
-sharp.cache(false);
-sharp.concurrency(1);
+let sharp: any = null;
+try {
+  // eslint-disable-next-line @typescript-eslint/no-var-requires
+  sharp = require("sharp");
+  if (sharp) {
+    sharp.cache(false);
+    sharp.concurrency(1);
+  }
+} catch (e) {
+  console.warn("Sharp native module not available or failed to load. Image processing will run in fallback mode.", e);
+}
 
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
 app.use(cors());
 app.use(express.json());
+
+// Health check endpoint to verify backend status on Hostinger / Production
+app.get("/api/health", (req, res) => {
+  res.status(200).json({
+    status: "ok",
+    uptime: process.uptime(),
+    supabaseConfigured: !!supabase,
+    minioConfigured: !!s3,
+    timestamp: new Date().toISOString(),
+  });
+});
 
 /* 
   --- SQL INSTRUCTION FOR SUPABASE ---
@@ -607,16 +624,31 @@ app.delete("/api/admin/photos/:id", checkAdmin, async (req, res): Promise<any> =
 async function startServer() {
   // Vite middleware for development
   if (process.env.NODE_ENV !== "production") {
+    const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
       server: { middlewareMode: true },
       appType: "spa",
     });
     app.use(vite.middlewares);
   } else {
-    const distPath = path.join(process.cwd(), "dist");
+    const possibleDistPaths = [
+      path.join(process.cwd(), "dist"),
+      path.join(__dirname, "dist"),
+      path.join(__dirname, "../dist"),
+      path.join(process.cwd(), "public_html"),
+      path.join(__dirname),
+    ];
+    const distPath = possibleDistPaths.find((p) => fs.existsSync(path.join(p, "index.html"))) || possibleDistPaths[0];
+
+    console.log("Serving static production files from:", distPath);
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
-      res.sendFile(path.join(distPath, "index.html"));
+      const indexPath = path.join(distPath, "index.html");
+      if (fs.existsSync(indexPath)) {
+        res.sendFile(indexPath);
+      } else {
+        res.status(404).send("index.html not found. Please run 'npm run build'.");
+      }
     });
   }
 
