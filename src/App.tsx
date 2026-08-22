@@ -5,14 +5,8 @@
 
 import React, { useState, useEffect } from "react";
 import { Camera, X, Upload, CheckCircle2, AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
-import imageCompression from "browser-image-compression";
-
-interface Foto {
-  id: string;
-  url_original: string;
-  url_thumbnail: string;
-  data_upload: string;
-}
+import { Foto } from "./types";
+import { uploadPhotoDirect, uploadVideoDirect } from "./uploader";
 
 const getDeviceId = () => {
   let id = localStorage.getItem("deviceId");
@@ -57,83 +51,15 @@ export default function App() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const files = Array.from(e.target.files);
-      if (files.length > 5) {
-        alert("Você pode selecionar no máximo 5 arquivos por vez.");
-        setSelectedFiles(files.slice(0, 5));
+      if (files.length > 10) {
+        alert("Você pode selecionar no máximo 10 arquivos por vez.");
+        setSelectedFiles(files.slice(0, 10));
       } else {
         setSelectedFiles(files);
       }
       setUploadStatus("idle");
       setOverallProgress(0);
     }
-  };
-
-  const uploadVideoWithProgress = async (file: File, deviceId: string): Promise<Foto> => {
-    const res = await fetch("/api/video/presigned", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ filename: file.name, contentType: file.type, deviceId })
-    });
-    const data = await res.json();
-    if (!res.ok) throw new Error(data.error || "Failed to get upload URL");
-    
-    await new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("PUT", data.uploadUrl);
-      xhr.setRequestHeader("Content-Type", file.type);
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) resolve(true);
-        else reject(new Error("Video upload failed with status " + xhr.status));
-      };
-      xhr.onerror = () => reject(new Error("Network error during video upload"));
-      xhr.send(file);
-    });
-    
-    const finalizeRes = await fetch("/api/video/finalize", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ id: data.id, key: data.key, deviceId })
-    });
-    const finalizeData = await finalizeRes.json();
-    if (!finalizeRes.ok) throw new Error(finalizeData.error || "Failed to finalize video");
-    
-    return finalizeData.foto;
-  };
-
-  const uploadFileWithProgress = (file: File, deviceId: string): Promise<Foto> => {
-    return new Promise((resolve, reject) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("POST", "/api/upload");
-      xhr.setRequestHeader("x-device-id", deviceId);
-      
-      xhr.onload = () => {
-        if (xhr.status >= 200 && xhr.status < 300) {
-          try {
-            const res = JSON.parse(xhr.responseText);
-            if (res.error) {
-              reject(new Error(res.error));
-            } else {
-              resolve(res.foto);
-            }
-          } catch (err) {
-            reject(new Error("Invalid response format"));
-          }
-        } else {
-          try {
-            const res = JSON.parse(xhr.responseText);
-            reject(new Error(res.error || "Upload failed with status " + xhr.status));
-          } catch {
-            reject(new Error("Upload failed with status " + xhr.status));
-          }
-        }
-      };
-      
-      xhr.onerror = () => reject(new Error("Network error"));
-      
-      const formData = new FormData();
-      formData.append("file", file);
-      xhr.send(formData);
-    });
   };
 
   const handleUpload = async () => {
@@ -148,52 +74,43 @@ export default function App() {
     const deviceId = getDeviceId();
     
     try {
-      for (let i = 0; i < selectedFiles.length; i++) {
+      const totalFiles = selectedFiles.length;
+      for (let i = 0; i < totalFiles; i++) {
         const file = selectedFiles[i];
         
-        if (file.type.startsWith("video/")) {
-          if (file.size > 100 * 1024 * 1024) {
-            throw new Error(`O vídeo ${file.name} ultrapassa o limite de 100MB.`);
+        const updateProgress = (filePct: number) => {
+          const completedPortion = (i / totalFiles) * 100;
+          const currentFilePortion = (filePct / 100) * (100 / totalFiles);
+          setOverallProgress(Math.min(99, Math.round(completedPortion + currentFilePortion)));
+        };
+
+        if (file.type.startsWith("video/") || file.name.match(/\.(mp4|mov|webm|m4v)$/i)) {
+          if (file.size > 200 * 1024 * 1024) {
+            throw new Error(`O vídeo ${file.name} ultrapassa o limite de 200MB.`);
           }
-          const foto = await uploadVideoWithProgress(file, deviceId);
-          newPhotos.push(foto);
-        } else if (file.type.startsWith("image/")) {
-          let fileToUpload = file;
-          try {
-            // Client-side compression to prevent server 503 OOM crashes
-            const options = {
-              maxSizeMB: 3,
-              maxWidthOrHeight: 1920,
-              useWebWorker: true,
-              fileType: "image/webp"
-            };
-            fileToUpload = await imageCompression(file, options);
-          } catch (compressErr) {
-            console.warn("Client compression failed, sending original", compressErr);
-            if (file.size > 5 * 1024 * 1024) {
-              throw new Error(`Não foi possível otimizar a imagem ${file.name} no seu aparelho. Tente outra foto.`);
-            }
-          }
-          const foto = await uploadFileWithProgress(fileToUpload, deviceId);
+          const foto = await uploadVideoDirect(file, deviceId, updateProgress);
           newPhotos.push(foto);
         } else {
-          throw new Error("Formato de arquivo não suportado.");
+          // Photo upload: 100% untouched original resolution & bit-for-bit quality
+          const foto = await uploadPhotoDirect(file, deviceId, updateProgress);
+          newPhotos.push(foto);
         }
-        
-        setOverallProgress(Math.round(((i + 1) / selectedFiles.length) * 100));
       }
 
+      setOverallProgress(100);
       setUploadStatus("success");
       setSelectedFiles([]);
       // Add new photos to the beginning of the list
       setPhotos((prev) => [...newPhotos.reverse(), ...prev]);
       
-      // Fechar o modal imediatamente após o envio terminar com sucesso
-      setIsModalOpen(false);
+      // Close modal smoothly after success
+      setTimeout(() => {
+        setIsModalOpen(false);
+      }, 600);
     } catch (err: any) {
       console.error("Upload failed", err);
       setUploadStatus("error");
-      setErrorMessage(err.message || "Erro desconhecido");
+      setErrorMessage(err.message || "Erro desconhecido ao realizar upload.");
     } finally {
       setUploading(false);
     }

@@ -14,6 +14,10 @@ import dotenv from "dotenv";
 
 dotenv.config();
 
+// Tune sharp to not exhaust memory in constrained environments
+sharp.cache(false);
+sharp.concurrency(1);
+
 const app = express();
 const PORT = process.env.PORT ? parseInt(process.env.PORT, 10) : 3000;
 
@@ -89,7 +93,7 @@ const publicBaseUrl = minioPublicUrl.endsWith(`/${bucketName}`)
   ? minioPublicUrl 
   : minioPublicUrl ? `${minioPublicUrl}/${bucketName}` : "";
 
-const upload = multer({ storage: multer.diskStorage({ dest: os.tmpdir() }) });
+const upload = multer({ dest: os.tmpdir() });
 
 // Rate limit map
 interface RateLimit {
@@ -226,6 +230,104 @@ app.post("/api/upload", upload.single("file"), async (req, res): Promise<any> =>
     if (fileToCleanup && fs.existsSync(fileToCleanup)) {
       try { fs.unlinkSync(fileToCleanup); } catch (e) { /* ignore */ }
     }
+  }
+});
+
+// Photo Presigned URL Endpoint (Direct S3 upload for instant speed & zero server memory, preserving 100% original quality)
+app.post("/api/photo/presigned", async (req, res): Promise<any> => {
+  try {
+    const { deviceId, filename, originalContentType, thumbContentType = "image/webp" } = req.body || {};
+    if (!checkRateLimit(deviceId)) {
+      return res.status(429).json({ error: "Limite de envios atingido. Aguarde 10 minutos." });
+    }
+    if (!s3 || !bucketName) {
+      return res.status(500).json({ error: "Server storage not configured" });
+    }
+
+    const uniqueId = uuidv4();
+    let ext = filename ? path.extname(filename).toLowerCase().replace(".", "") : "jpg";
+    if (!ext || ext.length > 5) ext = "jpg";
+
+    const originalFileName = `originals/${uniqueId}_original.${ext}`;
+    const thumbnailFileName = `thumbs/${uniqueId}_thumb.webp`;
+
+    const origContentType = originalContentType || (ext === "png" ? "image/png" : ext === "webp" ? "image/webp" : "image/jpeg");
+
+    const originalCommand = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: originalFileName,
+      ContentType: origContentType,
+    });
+    const thumbnailCommand = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: thumbnailFileName,
+      ContentType: thumbContentType,
+    });
+
+    const [originalUploadUrl, thumbnailUploadUrl] = await Promise.all([
+      getSignedUrl(s3, originalCommand, { expiresIn: 3600 }),
+      getSignedUrl(s3, thumbnailCommand, { expiresIn: 3600 }),
+    ]);
+
+    res.status(200).json({
+      id: uniqueId,
+      originalUploadUrl,
+      thumbnailUploadUrl,
+      originalKey: originalFileName,
+      thumbnailKey: thumbnailFileName,
+      originalContentType: origContentType,
+    });
+  } catch (err: any) {
+    console.error("Photo Presigned URL Error:", err);
+    res.status(500).json({ error: err.message || "Failed to generate photo upload URLs" });
+  }
+});
+
+// Photo Finalize Endpoint
+app.post("/api/photo/finalize", async (req, res): Promise<any> => {
+  try {
+    const { id, originalKey, thumbnailKey } = req.body || {};
+    if (!id || !originalKey || !thumbnailKey) {
+      return res.status(400).json({ error: "ID, originalKey e thumbnailKey são obrigatórios" });
+    }
+    if (!supabase) {
+      return res.status(500).json({ error: "Database not configured" });
+    }
+
+    const { data, error } = await (supabase as any)
+      .from("fotos")
+      .insert([
+        {
+          id,
+          url_original: originalKey,
+          url_thumbnail: thumbnailKey,
+        } as any
+      ])
+      .select();
+
+    if (error || !data || data.length === 0) {
+      console.warn("Supabase Insert Warning on finalize:", error);
+      return res.status(200).json({
+        success: true,
+        foto: {
+          id,
+          url_original: `${publicBaseUrl}/${originalKey}`,
+          url_thumbnail: `${publicBaseUrl}/${thumbnailKey}`,
+          data_upload: new Date().toISOString(),
+        }
+      });
+    }
+
+    const responseFoto = {
+      ...data[0],
+      url_original: `${publicBaseUrl}/${data[0].url_original}`,
+      url_thumbnail: `${publicBaseUrl}/${data[0].url_thumbnail}`,
+    };
+
+    res.status(200).json({ success: true, foto: responseFoto });
+  } catch (err: any) {
+    console.error("Photo Finalize Error:", err);
+    res.status(500).json({ error: err.message || "Failed to finalize photo" });
   }
 });
 
@@ -396,15 +498,17 @@ const checkAdmin = (req: any, res: any, next: any) => {
 
 // Admin: Set Cover Endpoint
 app.post("/api/admin/set-cover", upload.single("file"), checkAdmin, async (req, res): Promise<any> => {
+  let fileToCleanup: string | undefined;
   try {
     if (!req.file) {
       return res.status(400).json({ error: "No file provided" });
     }
+    fileToCleanup = req.file.path;
     if (!s3 || !bucketName) {
       return res.status(500).json({ error: "Server storage not configured" });
     }
 
-    const fileBuffer = req.file.buffer;
+    const fileBuffer = fs.readFileSync(req.file.path);
     const coverFileName = "RafaeDani.webp";
 
     const optimizedCover = await sharp(fileBuffer)
@@ -423,6 +527,10 @@ app.post("/api/admin/set-cover", upload.single("file"), checkAdmin, async (req, 
   } catch (err: any) {
     console.error("Set cover error:", err);
     res.status(500).json({ error: "Failed to set cover photo", details: err.message });
+  } finally {
+    if (fileToCleanup && fs.existsSync(fileToCleanup)) {
+      try { fs.unlinkSync(fileToCleanup); } catch (e) { /* ignore */ }
+    }
   }
 });
 

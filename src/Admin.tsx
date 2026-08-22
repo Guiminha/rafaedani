@@ -1,13 +1,51 @@
 import React, { useState, useEffect } from "react";
 import { Camera, Trash2, CheckCircle2, AlertCircle, RefreshCw } from "lucide-react";
-import imageCompression from "browser-image-compression";
-import { Foto } from "./types"; // We need to define Foto, or just put the type here. I'll import it from App or define it.
 
 type AdminFoto = {
   id: string;
   url_original: string;
   url_thumbnail: string;
   data_upload: string;
+};
+
+// Canvas resizer helper
+const resizeImageForCover = (file: File): Promise<Blob> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      const maxDim = 1920;
+      let w = img.naturalWidth || img.width;
+      let h = img.naturalHeight || img.height;
+      if (w > maxDim || h > maxDim) {
+        if (w > h) {
+          h = Math.round((h * maxDim) / w);
+          w = maxDim;
+        } else {
+          w = Math.round((w * maxDim) / h);
+          h = maxDim;
+        }
+      }
+      const canvas = document.createElement("canvas");
+      canvas.width = w;
+      canvas.height = h;
+      const ctx = canvas.getContext("2d");
+      if (ctx) {
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob((blob) => {
+          resolve(blob || file);
+        }, "image/webp", 0.85);
+      } else {
+        resolve(file);
+      }
+    };
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(file);
+    };
+    img.src = url;
+  });
 };
 
 export default function Admin() {
@@ -57,23 +95,11 @@ export default function Admin() {
     setCoverStatus("idle");
     setCoverErrorMessage("");
 
-    let fileToUpload = file;
     try {
-      const options = {
-        maxSizeMB: 1,
-        maxWidthOrHeight: 1920,
-        useWebWorker: true,
-        fileType: "image/webp"
-      };
-      fileToUpload = await imageCompression(file, options);
-    } catch (compressErr) {
-      console.warn("Client compression failed, sending original", compressErr);
-    }
+      const blob = await resizeImageForCover(file);
+      const formData = new FormData();
+      formData.append("file", blob, file.name);
 
-    const formData = new FormData();
-    formData.append("file", fileToUpload);
-
-    try {
       const res = await fetch("/api/admin/set-cover", {
         method: "POST",
         headers: {
