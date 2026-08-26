@@ -21,9 +21,6 @@ const isVideoFile = (f: File): boolean =>
   (f.type && f.type.startsWith("video/")) ||
   /\.(mp4|mov|webm|m4v|mkv|avi|mpg|mpeg|wmv|flv|3gp|ogv)$/i.test(f.name);
 
-// Bump this on every deploy so we can confirm the live site is up to date.
-const APP_VERSION = "2026.08.26-a";
-
 export default function App() {
   const [photos, setPhotos] = useState<Foto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -67,42 +64,31 @@ export default function App() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     // Reset the input value so the same selection can be picked again later
     const inputEl = e.target;
-    if (e.target.files && e.target.files.length > 0) {
-      const incoming = Array.from(e.target.files);
-      const currentVideos = selectedFiles.filter(isVideoFile).length;
-      const remainingTotal = 5 - selectedFiles.length;
-      if (remainingTotal <= 0) {
-        showToast("Você só pode enviar até 5 arquivos por envio.");
-        inputEl.value = "";
-        return;
-      }
-      let videoSlots = 3 - currentVideos;
-      const accepted: File[] = [];
-      let hitVideoLimit = false;
-      for (const f of incoming) {
-        if (selectedFiles.length + accepted.length >= 5) break;
-        if (isVideoFile(f)) {
-          if (videoSlots <= 0) {
-            hitVideoLimit = true;
-            continue;
-          }
-          videoSlots--;
-          accepted.push(f);
-        } else {
-          accepted.push(f);
-        }
-      }
-      if (hitVideoLimit) {
-        showToast("Você só pode enviar até 3 vídeos por envio.");
-      } else if (accepted.length < incoming.length) {
-        showToast("Você só pode enviar até 5 arquivos por envio.");
-      }
-      if (accepted.length > 0) {
-        setSelectedFiles([...selectedFiles, ...accepted]);
-      }
-      setUploadStatus("idle");
-      setOverallProgress(0);
+    if (!e.target.files || e.target.files.length === 0) {
+      inputEl.value = "";
+      return;
     }
+    const incoming = Array.from(e.target.files);
+    const currentVideos = selectedFiles.filter(isVideoFile).length;
+    const remainingTotal = 5 - selectedFiles.length;
+    const videoSlots = 3 - currentVideos;
+    const incomingVideos = incoming.filter(isVideoFile).length;
+
+    const exceedsTotal = incoming.length > remainingTotal;
+    const exceedsVideos = incomingVideos > videoSlots;
+
+    if (exceedsTotal || exceedsVideos) {
+      const msg = exceedsVideos
+        ? "Você só pode enviar até 3 vídeos por envio."
+        : "Você só pode enviar até 5 arquivos por envio.";
+      showToast(`${msg} Selecione no máximo o permitido.`);
+      inputEl.value = "";
+      return;
+    }
+
+    setSelectedFiles([...selectedFiles, ...incoming]);
+    setUploadStatus("idle");
+    setOverallProgress(0);
     inputEl.value = "";
   };
 
@@ -258,45 +244,11 @@ export default function App() {
                 className="aspect-square relative overflow-hidden bg-neutral-800 cursor-pointer group rounded-lg ring-1 ring-white/5"
                 onClick={() => openLightbox(index)}
               >
-                {foto.url_original.match(/\.(mp4|mov|webm)$/i) ? (
+                {foto.url_thumbnail && /\.(webp|jpe?g|png|gif)$/i.test(foto.url_thumbnail) ? (
                   <>
-                    {foto.url_thumbnail.match(/\.(webp|jpe?g|png|gif)$/i) ? (
-                      <img
-                        src={foto.url_thumbnail}
-                        alt="Momento do casamento"
-                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
-                        loading="lazy"
-                        decoding="async"
-                        onError={(e) => {
-                          const target = e.currentTarget;
-                          target.style.display = 'none';
-                          target.parentElement?.classList.add('flex', 'items-center', 'justify-center');
-                          target.parentElement?.setAttribute('title', 'Imagem bloqueada pelo MinIO (Bucket não é público)');
-                          const errorIcon = document.createElement('div');
-                          errorIcon.className = 'text-xs text-center text-neutral-500 p-2';
-                          errorIcon.innerHTML = '🔒<br/>Privado';
-                          target.parentElement?.appendChild(errorIcon);
-                        }}
-                      />
-                    ) : (
-                      <video
-                        src={foto.url_thumbnail}
-                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 pointer-events-none"
-                        muted
-                        playsInline
-                      />
-                    )}
-                    <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors duration-300">
-                      <div className="w-10 h-10 rounded-full bg-black/50 flex items-center justify-center backdrop-blur-sm shadow-xl">
-                        <div className="w-0 h-0 border-y-[6px] border-y-transparent border-l-[10px] border-l-white ml-1"></div>
-                      </div>
-                    </div>
-                  </>
-                ) : (
-                  <>
-                    <img 
-                      src={foto.url_thumbnail} 
-                      alt="Momento do casamento" 
+                    <img
+                      src={foto.url_thumbnail}
+                      alt="Momento do casamento"
                       className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                       loading="lazy"
                       decoding="async"
@@ -305,14 +257,27 @@ export default function App() {
                         target.style.display = 'none';
                         target.parentElement?.classList.add('flex', 'items-center', 'justify-center');
                         target.parentElement?.setAttribute('title', 'Imagem bloqueada pelo MinIO (Bucket não é público)');
-                        
                         const errorIcon = document.createElement('div');
                         errorIcon.className = 'text-xs text-center text-neutral-500 p-2';
                         errorIcon.innerHTML = '🔒<br/>Privado';
                         target.parentElement?.appendChild(errorIcon);
                       }}
                     />
-                    <div className="absolute inset-0 bg-black/0 group-hover:bg-black/10 transition-colors duration-300" />
+                  </>
+                ) : (
+                  <>
+                    <video
+                      src={foto.url_original}
+                      preload="metadata"
+                      muted
+                      playsInline
+                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 pointer-events-none"
+                    />
+                    <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors duration-300">
+                      <div className="w-10 h-10 rounded-full bg-black/50 flex items-center justify-center backdrop-blur-sm shadow-xl">
+                        <div className="w-0 h-0 border-y-[6px] border-y-transparent border-l-[10px] border-l-white ml-1"></div>
+                      </div>
+                    </div>
                   </>
                 )}
               </div>
@@ -336,7 +301,6 @@ export default function App() {
             <Upload className="w-5 h-5" />
             Enviar Foto
           </button>
-          <div className="text-center text-[10px] text-neutral-600 mt-2">versão {APP_VERSION}</div>
         </div>
       </footer>
 
@@ -354,7 +318,10 @@ export default function App() {
               <X className="w-6 h-6" />
             </button>
             
-            <h3 className="text-xl font-semibold mb-6 text-white">Enviar nova foto</h3>
+            <h3 className="text-xl font-semibold mb-2 text-white">Enviar nova foto</h3>
+            <p className="text-sm text-neutral-400 mb-6 text-center">
+              Você pode enviar até <span className="text-white font-semibold">5 arquivos</span> por envio (máx <span className="text-white font-semibold">3 vídeos</span>).
+            </p>
             
             <div className="mb-6">
               <label 
@@ -481,16 +448,7 @@ export default function App() {
             <ChevronRight className="w-8 h-8" />
           </button>
 
-          {galleryPhotos[lightboxIndex].url_original.match(/\.(mp4|mov|webm)$/i) ? (
-            <video 
-              src={galleryPhotos[lightboxIndex].url_original} 
-              poster={galleryPhotos[lightboxIndex].url_thumbnail}
-              controls
-              autoPlay
-              className="max-w-full max-h-[90vh] object-contain select-none bg-black"
-              onClick={(e) => e.stopPropagation()}
-            />
-          ) : (
+          {galleryPhotos[lightboxIndex].url_thumbnail && /\.(webp|jpe?g|png|gif)$/i.test(galleryPhotos[lightboxIndex].url_thumbnail) ? (
             <div 
               className="relative max-w-full max-h-[90vh] flex items-center justify-center"
               onClick={(e) => e.stopPropagation()}
@@ -523,6 +481,15 @@ export default function App() {
                 }}
               />
             </div>
+          ) : (
+            <video 
+              src={galleryPhotos[lightboxIndex].url_original} 
+              preload="metadata"
+              controls
+              autoPlay
+              className="max-w-full max-h-[90vh] object-contain select-none bg-black"
+              onClick={(e) => e.stopPropagation()}
+            />
           )}
           
            {/* Counter */}

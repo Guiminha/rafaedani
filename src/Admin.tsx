@@ -277,10 +277,18 @@ export default function Admin() {
             <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-5 xl:grid-cols-6 gap-4">
               {galleryPhotos.map((foto) => (
                 <div key={foto.id} className="group relative aspect-square bg-neutral-800 rounded-xl overflow-hidden border border-neutral-700">
-                  {foto.url_original.match(/\.(mp4|mov|webm)$/i) ? (
+                  {foto.url_thumbnail && /\.(webp|jpe?g|png|gif)$/i.test(foto.url_thumbnail) ? (
+                    <img 
+                      src={foto.url_thumbnail} 
+                      alt="Galeria" 
+                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
+                      loading="lazy"
+                    />
+                  ) : (
                     <>
                       <video 
-                        src={foto.url_thumbnail} 
+                        src={foto.url_original} 
+                        preload="metadata"
                         className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110 pointer-events-none"
                         muted
                         playsInline
@@ -291,13 +299,6 @@ export default function Admin() {
                         </div>
                       </div>
                     </>
-                  ) : (
-                    <img 
-                      src={foto.url_thumbnail} 
-                      alt="Galeria" 
-                      className="w-full h-full object-cover transition-transform duration-500 group-hover:scale-110"
-                      loading="lazy"
-                    />
                   )}
                   <div className="absolute inset-0 bg-gradient-to-t from-black/80 via-black/0 to-black/0 opacity-100 lg:opacity-0 lg:group-hover:opacity-100 transition-opacity flex flex-col justify-end p-3 z-10">
                     <button 

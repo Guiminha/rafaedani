@@ -352,40 +352,7 @@ export const uploadVideoDirect = async (
     throw new Error(completeData.error || "Falha ao registrar o vídeo no banco de dados.");
   }
 
-  // Deferred, non-blocking thumbnail generation. Runs after the call stack so
-  // the success UI paints first; the heavy decode won't freeze the upload.
-  const fotoId = completeData.foto?.id;
-  if (fotoId && initData.thumbnailUploadUrl) {
-    setTimeout(() => {
-      generateAndUploadVideoThumbnail(
-        file,
-        initData.thumbnailUploadUrl,
-        initData.thumbnailKey,
-        fotoId
-      ).catch((e) => console.warn("Video thumbnail deferred generation failed (non-fatal)", e));
-    }, 0);
-  }
-
   if (onProgress) onProgress(100);
   return completeData.foto;
 };
 
-/**
- * Generates the first-frame thumbnail for a video and uploads it, then updates
- * the database record. Intentionally run AFTER the main upload so decoding the
- * video never blocks the upload progress or the UI.
- */
-const generateAndUploadVideoThumbnail = async (
-  file: File,
-  thumbnailUploadUrl: string,
-  thumbnailKey: string,
-  fotoId: string
-): Promise<void> => {
-  const thumbBlob = await createVideoThumbnail(file);
-  await uploadThumbnail(thumbBlob, thumbnailUploadUrl);
-  await fetch("/api/upload/set-thumbnail", {
-    method: "POST",
-    headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: fotoId, thumbnailKey }),
-  });
-};
