@@ -507,13 +507,20 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const possibleDistPaths = [
-      import_path.default.join(process.cwd(), "dist"),
-      import_path.default.join(__dirname, "dist"),
-      import_path.default.join(__dirname, "../dist"),
-      import_path.default.join(process.cwd(), "public_html")
-    ];
-    const distPath = possibleDistPaths.find((p) => import_fs.default.existsSync(import_path.default.join(p, "index.html"))) || import_path.default.join(process.cwd(), "dist");
+    const resolveDistPath = () => {
+      let dir = __dirname;
+      for (let i = 0; i < 8; i++) {
+        for (const cand of ["dist", "public", "public_html", ""]) {
+          const p = import_path.default.join(dir, cand);
+          if (import_fs.default.existsSync(import_path.default.join(p, "index.html"))) return p;
+        }
+        const parent = import_path.default.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+      return import_path.default.join(process.cwd(), "dist");
+    };
+    const distPath = resolveDistPath();
     console.log("Serving static production files from:", distPath);
     app.use(import_express.default.static(distPath));
     app.get("*", (req, res) => {

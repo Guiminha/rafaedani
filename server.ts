@@ -659,13 +659,21 @@ async function startServer() {
     });
     app.use(vite.middlewares);
   } else {
-    const possibleDistPaths = [
-      path.join(process.cwd(), "dist"),
-      path.join(__dirname, "dist"),
-      path.join(__dirname, "../dist"),
-      path.join(process.cwd(), "public_html"),
-    ];
-    const distPath = possibleDistPaths.find((p) => fs.existsSync(path.join(p, "index.html"))) || path.join(process.cwd(), "dist");
+    // Resolve the built client folder by walking up the directory tree
+    const resolveDistPath = (): string => {
+      let dir = __dirname;
+      for (let i = 0; i < 8; i++) {
+        for (const cand of ["dist", "public", "public_html", ""]) {
+          const p = path.join(dir, cand);
+          if (fs.existsSync(path.join(p, "index.html"))) return p;
+        }
+        const parent = path.dirname(dir);
+        if (parent === dir) break;
+        dir = parent;
+      }
+      return path.join(process.cwd(), "dist");
+    };
+    const distPath = resolveDistPath();
     console.log("Serving static production files from:", distPath);
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
