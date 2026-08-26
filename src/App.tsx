@@ -296,7 +296,7 @@ export default function App() {
             </button>
             
             <p className="text-base text-neutral-300 mb-6 text-center font-medium px-2">
-              Você pode selecionar quantas fotos quiser — serão enviadas apenas as <span className="text-white font-semibold">primeiras 5 fotos</span> e até <span className="text-white font-semibold">3 vídeos</span> por envio.
+              Selecione até 5 fotos para enviar
             </p>
             
             <div className="mb-6">
@@ -322,9 +322,16 @@ export default function App() {
                   <span className="block text-sm font-semibold text-neutral-300">
                     {selectedFiles.length} selecionado{selectedFiles.length !== 1 ? "s" : ""}
                   </span>
-                  <span className="block text-[11px] text-neutral-500 px-2 text-center">
-                    Serão enviadas as primeiras 5 fotos e até 3 vídeos.
-                  </span>
+                  {selectedFiles.filter((f) => !isVideoFile(f)).length > 5 && (
+                    <span className="block text-xs font-semibold text-red-400 px-2 text-center">
+                      Só 5 fotos permitidas por envio.
+                    </span>
+                  )}
+                  {selectedFiles.filter(isVideoFile).length > 3 && (
+                    <span className="block text-xs font-semibold text-red-400 px-2 text-center">
+                      Só 3 vídeos permitidos por envio.
+                    </span>
+                  )}
                   <span className="block text-[10px] text-neutral-500 px-2 text-center">
                     Você pode enviar mais depois, respeitando o limite de 5 envios a cada 10 minutos.
                   </span>
