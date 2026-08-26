@@ -126,9 +126,9 @@ export default function App() {
       // Add new photos to the beginning of the list
       setPhotos((prev) => [...newPhotos.reverse(), ...prev]);
 
-      // Refresh the gallery after a short delay so the (deferred) video
-      // thumbnails, generated after the upload finishes, show up.
-      setTimeout(() => fetchPhotos(), 20000);
+      // Refresh the gallery after the deferred video thumbnails (generated
+      // ~1.5s after the upload finishes) have been stored, so they show up.
+      setTimeout(() => fetchPhotos(), 8000);
 
       // Close modal smoothly after success
       setTimeout(() => {

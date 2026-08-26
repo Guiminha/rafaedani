@@ -352,7 +352,43 @@ export const uploadVideoDirect = async (
     throw new Error(completeData.error || "Falha ao registrar o vídeo no banco de dados.");
   }
 
+  // Generate the first-frame webp thumbnail AFTER the upload finishes, so the
+  // heavy video decode never blocks the upload progress (no freeze during the
+  // upload). The webp is uploaded to thumbs/ and the DB url_thumbnail is
+  // updated, so the gallery shows a real image instead of a black <video>.
+  const fotoId = (completeData.foto && completeData.foto.id) || initData.id;
+  if (fotoId && initData.thumbnailUploadUrl) {
+    setTimeout(() => {
+      generateAndUploadVideoThumbnail(
+        file,
+        initData.thumbnailUploadUrl,
+        initData.thumbnailKey,
+        fotoId
+      ).catch((e) => console.warn("Video thumbnail generation failed (non-fatal)", e));
+    }, 1500);
+  }
+
   if (onProgress) onProgress(100);
   return completeData.foto;
+};
+
+/**
+ * Generates the first-frame thumbnail for a video and uploads it, then updates
+ * the database record. Runs AFTER the main upload (deferred) so decoding the
+ * video never blocks the upload progress or the UI during the upload.
+ */
+const generateAndUploadVideoThumbnail = async (
+  file: File,
+  thumbnailUploadUrl: string,
+  thumbnailKey: string,
+  fotoId: string
+): Promise<void> => {
+  const thumbBlob = await createVideoThumbnail(file);
+  await uploadThumbnail(thumbBlob, thumbnailUploadUrl);
+  await fetch("/api/upload/set-thumbnail", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: fotoId, thumbnailKey }),
+  });
 };
 
