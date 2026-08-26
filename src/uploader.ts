@@ -129,109 +129,168 @@ const safeJsonParse = async (res: Response): Promise<any> => {
  * Uploads a photo directly to MinIO with 100% original resolution & quality,
  * plus a lightweight thumbnail for fast mobile grid performance.
  */
+/**
+ * Uploads a single part of a multipart upload with a per-part timeout and
+ * automatic retries. This makes large uploads resilient on flaky 4G.
+ */
+const uploadPart = (
+  blob: Blob,
+  url: string,
+  partNumber: number,
+  contentType: string,
+  onProgress?: (loaded: number) => void,
+  timeoutMs = 5 * 60 * 1000
+): Promise<string> => {
+  return new Promise((resolve, reject) => {
+    const attempt = (retriesLeft: number) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", url);
+      xhr.setRequestHeader("Content-Type", contentType);
+      xhr.timeout = timeoutMs;
+
+      xhr.upload.onprogress = (e) => {
+        if (e.lengthComputable && onProgress) onProgress(e.loaded);
+      };
+
+      const fail = () => {
+        if (retriesLeft > 0) attempt(retriesLeft - 1);
+        else reject(new Error(`Falha no envio da parte ${partNumber} (HTTP ${xhr.status}).`));
+      };
+
+      xhr.onload = () => {
+        if (xhr.status >= 200 && xhr.status < 300) {
+          resolve(xhr.getResponseHeader("ETag") || "");
+        } else {
+          fail();
+        }
+      };
+      xhr.onerror = fail;
+      xhr.ontimeout = fail;
+      xhr.send(blob);
+    };
+    attempt(2); // 3 total attempts per part
+  });
+};
+
+/**
+ * Uploads a file using S3/MinIO multipart: splits into chunks, uploads each
+ * with its own timeout + retry, and returns the collected part info.
+ */
+const uploadFileMultipart = async (
+  file: File,
+  opts: { partUrls: string[]; chunkSize: number; totalParts: number; contentType: string; onProgress?: (pct: number) => void }
+): Promise<{ PartNumber: number; ETag: string }[]> => {
+  const { partUrls, chunkSize, totalParts, contentType, onProgress } = opts;
+  const parts: { PartNumber: number; ETag: string }[] = [];
+
+  for (let i = 0; i < totalParts; i++) {
+    const start = i * chunkSize;
+    const end = Math.min(start + chunkSize, file.size);
+    const blob = file.slice(start, end);
+    const partNumber = i + 1;
+
+    const etag = await uploadPart(
+      blob,
+      partUrls[i],
+      partNumber,
+      contentType,
+      (loaded) => {
+        if (onProgress) {
+          const overall = Math.min(99, Math.round(((start + loaded) / file.size) * 100));
+          onProgress(overall);
+        }
+      }
+    );
+    parts.push({ PartNumber: partNumber, ETag: etag });
+  }
+  return parts;
+};
+
+/** Uploads a small thumbnail blob via a single PUT (non-fatal, no progress). */
+const uploadThumbnail = (thumbBlob: Blob, url: string): Promise<void> => {
+  return new Promise((resolve) => {
+    const xhr = new XMLHttpRequest();
+    xhr.open("PUT", url);
+    xhr.setRequestHeader("Content-Type", "image/webp");
+    xhr.onload = () => resolve();
+    xhr.onerror = () => {
+      console.warn("Thumbnail upload failed (non-fatal)");
+      resolve();
+    };
+    xhr.send(thumbBlob);
+  });
+};
+
+/**
+ * Uploads a photo to MinIO using resilient multipart upload + a lightweight
+ * WebP thumbnail for fast mobile grid rendering.
+ */
 export const uploadPhotoDirect = async (
   file: File,
   deviceId: string,
   onProgress?: (pct: number) => void,
   submissionId?: string
 ): Promise<Foto> => {
-  // 1. Generate thumbnail in memory (original file remains 100% untouched)
-  const thumbBlob = await createThumbnail(file);
-
-  // 2. Request presigned URLs
   const originalContentType = file.type || "image/jpeg";
-  const presignedRes = await fetch("/api/photo/presigned", {
+
+  const initRes = await fetch("/api/upload/multipart-init", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       deviceId,
-      filename: file.name,
-      originalContentType,
-      thumbContentType: "image/webp",
       submissionId,
+      filename: file.name,
+      contentType: originalContentType,
       size: file.size,
+      kind: "photo",
     }),
   });
-
-  const presignedData = await safeJsonParse(presignedRes);
-  if (!presignedRes.ok) {
-    throw new Error(presignedData.error || "Falha ao obter autorização de envio.");
+  const initData = await safeJsonParse(initRes);
+  if (!initRes.ok) {
+    throw new Error(initData.error || "Falha ao iniciar o envio da foto.");
   }
 
-  // 3. Upload untouched original file directly to MinIO
-  await new Promise<void>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("PUT", presignedData.originalUploadUrl);
-    xhr.setRequestHeader("Content-Type", presignedData.originalContentType || originalContentType);
+  // Generate + upload thumbnail (non-fatal)
+  try {
+    const thumbBlob = await createThumbnail(file);
+    if (initData.thumbnailUploadUrl) await uploadThumbnail(thumbBlob, initData.thumbnailUploadUrl);
+  } catch (e) {
+    console.warn("Thumbnail generation failed (non-fatal)", e);
+  }
 
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        const pct = Math.round((e.loaded / e.total) * 90); // 0-90% for original upload
-        onProgress(pct);
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve();
-      } else {
-        reject(new Error(`Falha no upload do arquivo original para o MinIO (HTTP ${xhr.status})`));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error("Erro de conexão ao enviar o arquivo original para o MinIO."));
-    xhr.ontimeout = () => reject(new Error("Tempo limite excedido ao enviar o arquivo."));
-    xhr.send(file);
+  // Multipart upload of the original
+  const parts = await uploadFileMultipart(file, {
+    partUrls: initData.partUrls,
+    chunkSize: initData.chunkSize,
+    totalParts: initData.totalParts,
+    contentType: originalContentType,
+    onProgress,
   });
 
-  // 4. Upload thumbnail directly to MinIO
-  await new Promise<void>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("PUT", presignedData.thumbnailUploadUrl);
-    xhr.setRequestHeader("Content-Type", "image/webp");
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        if (onProgress) onProgress(95);
-        resolve();
-      } else {
-        // Thumbnail failure is non-fatal; we can still finalize
-        console.warn("Thumbnail upload returned", xhr.status);
-        resolve();
-      }
-    };
-
-    xhr.onerror = () => {
-      console.warn("Thumbnail upload network error");
-      resolve();
-    };
-
-    xhr.send(thumbBlob);
-  });
-
-  // 5. Finalize photo metadata in Supabase
-  const finalizeRes = await fetch("/api/photo/finalize", {
+  const completeRes = await fetch("/api/upload/multipart-complete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
-      id: presignedData.id,
-      originalKey: presignedData.originalKey,
-      thumbnailKey: presignedData.thumbnailKey,
-      deviceId,
+      id: initData.id,
+      key: initData.key,
+      uploadId: initData.uploadId,
+      parts,
+      kind: "photo",
+      thumbnailKey: initData.thumbnailKey,
     }),
   });
-
-  const finalizeData = await safeJsonParse(finalizeRes);
-  if (!finalizeRes.ok) {
-    throw new Error(finalizeData.error || "Falha ao registrar a foto no banco de dados.");
+  const completeData = await safeJsonParse(completeRes);
+  if (!completeRes.ok) {
+    throw new Error(completeData.error || "Falha ao finalizar a foto no banco de dados.");
   }
 
   if (onProgress) onProgress(100);
-  return finalizeData.foto;
+  return completeData.foto;
 };
 
 /**
- * Uploads a video directly to MinIO with 100% original quality.
+ * Uploads a video to MinIO using resilient multipart upload + a first-frame
+ * WebP thumbnail for fast mobile grid rendering.
  */
 export const uploadVideoDirect = async (
   file: File,
@@ -239,88 +298,59 @@ export const uploadVideoDirect = async (
   onProgress?: (pct: number) => void,
   submissionId?: string
 ): Promise<Foto> => {
-  const res = await fetch("/api/video/presigned", {
+  const contentType = file.type || "video/mp4";
+
+  const initRes = await fetch("/api/upload/multipart-init", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
     body: JSON.stringify({
       filename: file.name,
-      contentType: file.type || "video/mp4",
+      contentType,
       deviceId,
       submissionId,
       size: file.size,
+      kind: "video",
     }),
   });
-
-  const data = await safeJsonParse(res);
-  if (!res.ok) {
-    throw new Error(data.error || "Falha ao obter autorização para o vídeo.");
+  const initData = await safeJsonParse(initRes);
+  if (!initRes.ok) {
+    throw new Error(initData.error || "Falha ao obter autorização para o vídeo.");
   }
 
-  // Generate a lightweight first-frame thumbnail (non-fatal if unsupported)
-  let thumbBlob: Blob | null = null;
+  // Generate + upload first-frame thumbnail (non-fatal)
   try {
-    thumbBlob = await createVideoThumbnail(file);
+    const thumbBlob = await createVideoThumbnail(file);
+    if (initData.thumbnailUploadUrl) await uploadThumbnail(thumbBlob, initData.thumbnailUploadUrl);
   } catch (e) {
-    console.warn("Could not generate video thumbnail", e);
+    console.warn("Video thumbnail generation failed (non-fatal)", e);
   }
 
-  await new Promise<void>((resolve, reject) => {
-    const xhr = new XMLHttpRequest();
-    xhr.open("PUT", data.uploadUrl);
-    xhr.setRequestHeader("Content-Type", file.type || "video/mp4");
-
-    xhr.upload.onprogress = (e) => {
-      if (e.lengthComputable && onProgress) {
-        const pct = thumbBlob ? Math.round((e.loaded / e.total) * 80) : Math.round((e.loaded / e.total) * 95);
-        onProgress(pct);
-      }
-    };
-
-    xhr.onload = () => {
-      if (xhr.status >= 200 && xhr.status < 300) {
-        resolve();
-      } else {
-        reject(new Error(`Falha no upload do vídeo (HTTP ${xhr.status})`));
-      }
-    };
-
-    xhr.onerror = () => reject(new Error("Erro de conexão ao enviar o vídeo para o MinIO."));
-    xhr.ontimeout = () => reject(new Error("Tempo limite excedido ao enviar o vídeo."));
-    xhr.send(file);
+  // Multipart upload of the video
+  const parts = await uploadFileMultipart(file, {
+    partUrls: initData.partUrls,
+    chunkSize: initData.chunkSize,
+    totalParts: initData.totalParts,
+    contentType,
+    onProgress,
   });
 
-  // Upload thumbnail (non-fatal)
-  if (thumbBlob) {
-    await new Promise<void>((resolve) => {
-      const xhr = new XMLHttpRequest();
-      xhr.open("PUT", data.thumbnailUploadUrl);
-      xhr.setRequestHeader("Content-Type", "image/webp");
-
-      xhr.onload = () => {
-        if (onProgress) onProgress(95);
-        resolve();
-      };
-      xhr.onerror = () => {
-        console.warn("Video thumbnail upload failed");
-        resolve();
-      };
-      xhr.send(thumbBlob);
-    });
-  } else if (onProgress) {
-    onProgress(95);
-  }
-
-  const finalizeRes = await fetch("/api/video/finalize", {
+  const completeRes = await fetch("/api/upload/multipart-complete", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: data.id, key: data.key, thumbnailKey: data.thumbnailKey, deviceId }),
+    body: JSON.stringify({
+      id: initData.id,
+      key: initData.key,
+      uploadId: initData.uploadId,
+      parts,
+      kind: "video",
+      thumbnailKey: initData.thumbnailKey,
+    }),
   });
-
-  const finalizeData = await safeJsonParse(finalizeRes);
-  if (!finalizeRes.ok) {
-    throw new Error(finalizeData.error || "Falha ao registrar o vídeo no banco de dados.");
+  const completeData = await safeJsonParse(completeRes);
+  if (!completeRes.ok) {
+    throw new Error(completeData.error || "Falha ao registrar o vídeo no banco de dados.");
   }
 
   if (onProgress) onProgress(100);
-  return finalizeData.foto;
+  return completeData.foto;
 };

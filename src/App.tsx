@@ -3,7 +3,7 @@
  * SPDX-License-Identifier: Apache-2.0
  */
 
-import React, { useState, useEffect } from "react";
+import React, { useState, useEffect, useRef } from "react";
 import { Camera, X, Upload, CheckCircle2, AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { Foto } from "./types";
 import { uploadPhotoDirect, uploadVideoDirect } from "./uploader";
@@ -30,6 +30,15 @@ export default function App() {
   // Lightbox state
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
+  // Transient toast (auto-dismiss)
+  const [toast, setToast] = useState<string | null>(null);
+  const toastTimer = useRef<number | null>(null);
+  const showToast = (msg: string) => {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    setToast(msg);
+    toastTimer.current = window.setTimeout(() => setToast(null), 1500);
+  };
+
   useEffect(() => {
     fetchPhotos();
   }, []);
@@ -49,17 +58,26 @@ export default function App() {
   };
 
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
+    // Reset the input value so the same selection can be picked again later
+    const inputEl = e.target;
     if (e.target.files && e.target.files.length > 0) {
       const files = Array.from(e.target.files);
-      if (files.length > 5) {
-        alert("Você pode selecionar no máximo 5 arquivos por vez.");
-        setSelectedFiles(files.slice(0, 5));
+      const remaining = 5 - selectedFiles.length;
+      if (remaining <= 0) {
+        showToast("Você só pode enviar até 5 arquivos por vez.");
+        inputEl.value = "";
+        return;
+      }
+      if (files.length > remaining) {
+        showToast("Você só pode enviar até 5 arquivos por vez.");
+        setSelectedFiles([...selectedFiles, ...files.slice(0, remaining)]);
       } else {
-        setSelectedFiles(files);
+        setSelectedFiles([...selectedFiles, ...files]);
       }
       setUploadStatus("idle");
       setOverallProgress(0);
     }
+    inputEl.value = "";
   };
 
   const handleUpload = async () => {
@@ -324,10 +342,10 @@ export default function App() {
                   type="file" 
                   accept="image/*,video/mp4,video/quicktime,video/webm" 
                   multiple
-                  className="hidden" 
-                  onChange={handleFileChange}
-                  disabled={uploading}
-                />
+                className="hidden" 
+                   onChange={handleFileChange}
+                   disabled={uploading || selectedFiles.length >= 5}
+                 />
               </label>
               {uploading && (
                 <div className="mt-2 text-center text-xs text-neutral-500">
@@ -378,7 +396,7 @@ export default function App() {
       )}
 
       {/* Lightbox Visualizador */}
-      {lightboxIndex !== null && photos[lightboxIndex] && (
+      {lightboxIndex !== null && galleryPhotos[lightboxIndex] && (
         <div className="fixed inset-0 bg-black/95 z-[60] flex items-center justify-center" onClick={closeLightbox}>
           {/* Close button */}
           <button 
@@ -404,9 +422,9 @@ export default function App() {
             <ChevronRight className="w-8 h-8" />
           </button>
 
-          {photos[lightboxIndex].url_original.match(/\.(mp4|mov|webm)$/i) ? (
+          {galleryPhotos[lightboxIndex].url_original.match(/\.(mp4|mov|webm)$/i) ? (
             <video 
-              src={photos[lightboxIndex].url_original} 
+              src={galleryPhotos[lightboxIndex].url_original} 
               controls
               autoPlay
               className="max-w-full max-h-[90vh] object-contain select-none"
@@ -414,7 +432,7 @@ export default function App() {
             />
           ) : (
             <img 
-              src={photos[lightboxIndex].url_original} 
+              src={galleryPhotos[lightboxIndex].url_original} 
               alt="Original" 
               className="max-w-full max-h-[90vh] object-contain select-none"
               onClick={(e) => e.stopPropagation()} // Prevent closing when clicking the image
@@ -432,10 +450,17 @@ export default function App() {
             />
           )}
           
-          {/* Counter */}
-          <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-white/60 text-sm font-medium tracking-wide">
-            {lightboxIndex + 1} / {photos.length}
-          </div>
+           {/* Counter */}
+           <div className="absolute bottom-6 left-1/2 -translate-x-1/2 text-white/60 text-sm font-medium tracking-wide">
+             {lightboxIndex + 1} / {galleryPhotos.length}
+           </div>
+        </div>
+      )}
+
+      {/* Transient toast */}
+      {toast && (
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] bg-red-900/90 text-red-100 text-sm px-4 py-2 rounded-xl shadow-lg border border-red-700">
+          {toast}
         </div>
       )}
     </div>

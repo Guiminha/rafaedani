@@ -3,7 +3,7 @@ import os from "os";
 import express from "express";
 import path from "path";
 import multer from "multer";
-import { S3Client, PutObjectCommand, DeleteObjectCommand } from "@aws-sdk/client-s3";
+import { S3Client, PutObjectCommand, DeleteObjectCommand, CreateMultipartUploadCommand, UploadPartCommand, CompleteMultipartUploadCommand, AbortMultipartUploadCommand } from "@aws-sdk/client-s3";
 import { getSignedUrl } from "@aws-sdk/s3-request-presigner";
 import { createClient } from "@supabase/supabase-js";
 import { v4 as uuidv4 } from "uuid";
@@ -149,6 +149,7 @@ const deviceLimits = new Map<string, RateLimit>();
 const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
 const RATE_LIMIT_MAX_SUBMISSIONS = 5;
 const MAX_VIDEO_SIZE = 150 * 1024 * 1024; // 150MB
+const MULTIPART_CHUNK_SIZE = 10 * 1024 * 1024; // 10MB per part
 
 function checkRateLimit(deviceId: string | undefined, submissionId?: string): boolean {
   if (!deviceId) return true; // allow if no device ID provided, though frontend should always provide it
@@ -463,6 +464,155 @@ app.post("/api/video/finalize", async (req, res): Promise<any> => {
   } catch (err: any) {
     console.error("Video Finalize Error:", err);
     res.status(500).json({ error: err.message || "Failed to finalize video" });
+  }
+});
+
+// ---------- Multipart Upload (resilient for large files / videos) ----------
+
+app.post("/api/upload/multipart-init", async (req, res): Promise<any> => {
+  try {
+    const { deviceId, submissionId, filename, contentType, size, kind } = req.body || {};
+    if (!checkRateLimit(deviceId, submissionId)) {
+      return res.status(429).json({ error: "Você atingiu o limite de 5 envios. Aguarde 10 minutos para enviar novamente." });
+    }
+    if (!s3 || !bucketName) {
+      return res.status(500).json({ error: "Server storage not configured" });
+    }
+    if (!kind || (kind !== "photo" && kind !== "video")) {
+      return res.status(400).json({ error: "kind inválido (use 'photo' ou 'video')." });
+    }
+    if (kind === "video" && size && size > MAX_VIDEO_SIZE) {
+      return res.status(400).json({ error: "O vídeo excede o limite de 150MB." });
+    }
+
+    const uniqueId = uuidv4();
+    const rawExt = filename ? path.extname(filename).toLowerCase().replace(".", "") : (kind === "video" ? "mp4" : "jpg");
+    const validExt = rawExt && rawExt.length <= 5 ? rawExt : (kind === "video" ? "mp4" : "jpg");
+    const key = kind === "video"
+      ? `originals/${uniqueId}_video.${validExt}`
+      : `originals/${uniqueId}_original.${validExt}`;
+
+    const command = new CreateMultipartUploadCommand({
+      Bucket: bucketName,
+      Key: key,
+      ContentType: contentType || (kind === "video" ? "video/mp4" : "image/jpeg"),
+    });
+    const { UploadId } = await s3.send(command);
+    if (!UploadId) {
+      return res.status(500).json({ error: "Falha ao iniciar upload multipart." });
+    }
+
+    const totalSize = typeof size === "number" && size > 0 ? size : MULTIPART_CHUNK_SIZE;
+    const totalParts = Math.max(1, Math.ceil(totalSize / MULTIPART_CHUNK_SIZE));
+
+    const partUrls: string[] = [];
+    for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
+      const partCommand = new UploadPartCommand({
+        Bucket: bucketName,
+        Key: key,
+        UploadId,
+        PartNumber: partNumber,
+      });
+      const url = await getSignedUrl(s3, partCommand, { expiresIn: 3600 });
+      partUrls.push(url);
+    }
+
+    const response: any = {
+      id: uniqueId,
+      uploadId: UploadId,
+      key,
+      partUrls,
+      chunkSize: MULTIPART_CHUNK_SIZE,
+      totalParts,
+    };
+
+    // Both photos and videos get a single-PUT presigned URL for a (small) thumbnail
+    const thumbnailKey = `thumbs/${uniqueId}_thumb.webp`;
+    const thumbCommand = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: thumbnailKey,
+      ContentType: "image/webp",
+    });
+    response.thumbnailUploadUrl = await getSignedUrl(s3, thumbCommand, { expiresIn: 3600 });
+    response.thumbnailKey = thumbnailKey;
+
+    res.status(200).json(response);
+  } catch (err: any) {
+    console.error("Multipart init error:", err);
+    res.status(500).json({ error: err.message || "Falha ao iniciar upload multipart." });
+  }
+});
+
+app.post("/api/upload/multipart-complete", async (req, res): Promise<any> => {
+  try {
+    const { id, key, uploadId, parts, kind, thumbnailKey } = req.body || {};
+    if (!id || !key || !uploadId || !Array.isArray(parts) || parts.length === 0) {
+      return res.status(400).json({ error: "Dados incompletos para finalizar o upload." });
+    }
+    if (!s3 || !bucketName) {
+      return res.status(500).json({ error: "Server storage not configured" });
+    }
+    if (!supabase) {
+      return res.status(500).json({ error: "Database not configured" });
+    }
+
+    const command = new CompleteMultipartUploadCommand({
+      Bucket: bucketName,
+      Key: key,
+      UploadId: uploadId,
+      MultipartUpload: {
+        Parts: parts
+          .map((p: any) => ({ PartNumber: Number(p.PartNumber), ETag: p.ETag }))
+          .sort((a: any, b: any) => a.PartNumber - b.PartNumber),
+      },
+    });
+    await s3.send(command);
+
+    const finalThumbnailKey = thumbnailKey || key;
+    const { data, error } = await (supabase as any)
+      .from("fotos")
+      .insert([{ id, url_original: key, url_thumbnail: finalThumbnailKey } as any])
+      .select();
+
+    if (error || !data || data.length === 0) {
+      console.warn("Supabase insert warning on multipart complete:", error);
+      return res.status(200).json({
+        success: true,
+        foto: {
+          id,
+          url_original: `${publicBaseUrl}/${key}`,
+          url_thumbnail: `${publicBaseUrl}/${finalThumbnailKey}`,
+          data_upload: new Date().toISOString(),
+        },
+      });
+    }
+
+    const responseFoto = {
+      ...data[0],
+      url_original: `${publicBaseUrl}/${data[0].url_original}`,
+      url_thumbnail: `${publicBaseUrl}/${data[0].url_thumbnail}`,
+    };
+    res.status(200).json({ success: true, foto: responseFoto });
+  } catch (err: any) {
+    console.error("Multipart complete error:", err);
+    res.status(500).json({ error: err.message || "Falha ao finalizar upload." });
+  }
+});
+
+app.post("/api/upload/multipart-abort", async (req, res): Promise<any> => {
+  try {
+    const { key, uploadId } = req.body || {};
+    if (!key || !uploadId) {
+      return res.status(400).json({ error: "key e uploadId são obrigatórios." });
+    }
+    if (!s3 || !bucketName) {
+      return res.status(500).json({ error: "Server storage not configured" });
+    }
+    await s3.send(new AbortMultipartUploadCommand({ Bucket: bucketName, Key: key, UploadId }));
+    res.status(200).json({ success: true });
+  } catch (err: any) {
+    console.error("Multipart abort error:", err);
+    res.status(500).json({ error: err.message || "Falha ao abortar upload." });
   }
 });
 

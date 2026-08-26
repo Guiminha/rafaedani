@@ -123,6 +123,7 @@ var deviceLimits = /* @__PURE__ */ new Map();
 var RATE_LIMIT_WINDOW_MS = 10 * 60 * 1e3;
 var RATE_LIMIT_MAX_SUBMISSIONS = 5;
 var MAX_VIDEO_SIZE = 150 * 1024 * 1024;
+var MULTIPART_CHUNK_SIZE = 10 * 1024 * 1024;
 function checkRateLimit(deviceId, submissionId) {
   if (!deviceId) return true;
   const now = Date.now();
@@ -367,6 +368,131 @@ app.post("/api/video/finalize", async (req, res) => {
   } catch (err) {
     console.error("Video Finalize Error:", err);
     res.status(500).json({ error: err.message || "Failed to finalize video" });
+  }
+});
+app.post("/api/upload/multipart-init", async (req, res) => {
+  try {
+    const { deviceId, submissionId, filename, contentType, size, kind } = req.body || {};
+    if (!checkRateLimit(deviceId, submissionId)) {
+      return res.status(429).json({ error: "Voc\xEA atingiu o limite de 5 envios. Aguarde 10 minutos para enviar novamente." });
+    }
+    if (!s3 || !bucketName) {
+      return res.status(500).json({ error: "Server storage not configured" });
+    }
+    if (!kind || kind !== "photo" && kind !== "video") {
+      return res.status(400).json({ error: "kind inv\xE1lido (use 'photo' ou 'video')." });
+    }
+    if (kind === "video" && size && size > MAX_VIDEO_SIZE) {
+      return res.status(400).json({ error: "O v\xEDdeo excede o limite de 150MB." });
+    }
+    const uniqueId = (0, import_uuid.v4)();
+    const rawExt = filename ? import_path.default.extname(filename).toLowerCase().replace(".", "") : kind === "video" ? "mp4" : "jpg";
+    const validExt = rawExt && rawExt.length <= 5 ? rawExt : kind === "video" ? "mp4" : "jpg";
+    const key = kind === "video" ? `originals/${uniqueId}_video.${validExt}` : `originals/${uniqueId}_original.${validExt}`;
+    const command = new import_client_s3.CreateMultipartUploadCommand({
+      Bucket: bucketName,
+      Key: key,
+      ContentType: contentType || (kind === "video" ? "video/mp4" : "image/jpeg")
+    });
+    const { UploadId: UploadId2 } = await s3.send(command);
+    if (!UploadId2) {
+      return res.status(500).json({ error: "Falha ao iniciar upload multipart." });
+    }
+    const totalSize = typeof size === "number" && size > 0 ? size : MULTIPART_CHUNK_SIZE;
+    const totalParts = Math.max(1, Math.ceil(totalSize / MULTIPART_CHUNK_SIZE));
+    const partUrls = [];
+    for (let partNumber = 1; partNumber <= totalParts; partNumber++) {
+      const partCommand = new import_client_s3.UploadPartCommand({
+        Bucket: bucketName,
+        Key: key,
+        UploadId: UploadId2,
+        PartNumber: partNumber
+      });
+      const url = await (0, import_s3_request_presigner.getSignedUrl)(s3, partCommand, { expiresIn: 3600 });
+      partUrls.push(url);
+    }
+    const response = {
+      id: uniqueId,
+      uploadId: UploadId2,
+      key,
+      partUrls,
+      chunkSize: MULTIPART_CHUNK_SIZE,
+      totalParts
+    };
+    const thumbnailKey = `thumbs/${uniqueId}_thumb.webp`;
+    const thumbCommand = new import_client_s3.PutObjectCommand({
+      Bucket: bucketName,
+      Key: thumbnailKey,
+      ContentType: "image/webp"
+    });
+    response.thumbnailUploadUrl = await (0, import_s3_request_presigner.getSignedUrl)(s3, thumbCommand, { expiresIn: 3600 });
+    response.thumbnailKey = thumbnailKey;
+    res.status(200).json(response);
+  } catch (err) {
+    console.error("Multipart init error:", err);
+    res.status(500).json({ error: err.message || "Falha ao iniciar upload multipart." });
+  }
+});
+app.post("/api/upload/multipart-complete", async (req, res) => {
+  try {
+    const { id, key, uploadId, parts, kind, thumbnailKey } = req.body || {};
+    if (!id || !key || !uploadId || !Array.isArray(parts) || parts.length === 0) {
+      return res.status(400).json({ error: "Dados incompletos para finalizar o upload." });
+    }
+    if (!s3 || !bucketName) {
+      return res.status(500).json({ error: "Server storage not configured" });
+    }
+    if (!supabase) {
+      return res.status(500).json({ error: "Database not configured" });
+    }
+    const command = new import_client_s3.CompleteMultipartUploadCommand({
+      Bucket: bucketName,
+      Key: key,
+      UploadId: uploadId,
+      MultipartUpload: {
+        Parts: parts.map((p) => ({ PartNumber: Number(p.PartNumber), ETag: p.ETag })).sort((a, b) => a.PartNumber - b.PartNumber)
+      }
+    });
+    await s3.send(command);
+    const finalThumbnailKey = thumbnailKey || key;
+    const { data, error } = await supabase.from("fotos").insert([{ id, url_original: key, url_thumbnail: finalThumbnailKey }]).select();
+    if (error || !data || data.length === 0) {
+      console.warn("Supabase insert warning on multipart complete:", error);
+      return res.status(200).json({
+        success: true,
+        foto: {
+          id,
+          url_original: `${publicBaseUrl}/${key}`,
+          url_thumbnail: `${publicBaseUrl}/${finalThumbnailKey}`,
+          data_upload: (/* @__PURE__ */ new Date()).toISOString()
+        }
+      });
+    }
+    const responseFoto = {
+      ...data[0],
+      url_original: `${publicBaseUrl}/${data[0].url_original}`,
+      url_thumbnail: `${publicBaseUrl}/${data[0].url_thumbnail}`
+    };
+    res.status(200).json({ success: true, foto: responseFoto });
+  } catch (err) {
+    console.error("Multipart complete error:", err);
+    res.status(500).json({ error: err.message || "Falha ao finalizar upload." });
+  }
+});
+app.post("/api/upload/multipart-abort", async (req, res) => {
+  try {
+    const { key, uploadId } = req.body || {};
+    if (!key || !uploadId) {
+      return res.status(400).json({ error: "key e uploadId s\xE3o obrigat\xF3rios." });
+    }
+    if (!s3 || !bucketName) {
+      return res.status(500).json({ error: "Server storage not configured" });
+    }
+    await s3.send(new import_client_s3.AbortMultipartUploadCommand({ Bucket: bucketName, Key: key, UploadId }));
+    res.status(200).json({ success: true });
+  } catch (err) {
+    console.error("Multipart abort error:", err);
+    res.status(500).json({ error: err.message || "Falha ao abortar upload." });
   }
 });
 app.get("/api/photos", async (req, res) => {
