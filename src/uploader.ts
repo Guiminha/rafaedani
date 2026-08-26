@@ -61,15 +61,16 @@ export const createVideoThumbnail = (file: File): Promise<Blob> => {
     video.src = url;
     video.muted = true;
     video.playsInline = true;
-    video.preload = "auto";
+    video.preload = "metadata";
     video.crossOrigin = "anonymous";
 
     const cleanup = () => URL.revokeObjectURL(url);
 
     video.onloadeddata = () => {
-      // Seek a tiny bit forward to avoid a black first frame on some codecs
+      // Seek a tiny bit forward to avoid a black first frame on some codecs.
+      // Using a very small offset avoids buffering/decoding the whole file.
       try {
-        video.currentTime = Math.min(0.1, (video.duration || 1) / 2 || 0.1);
+        video.currentTime = 0.01;
       } catch {
         /* ignore */
       }
@@ -145,7 +146,6 @@ const uploadPart = (
     const attempt = (retriesLeft: number) => {
       const xhr = new XMLHttpRequest();
       xhr.open("PUT", url);
-      xhr.setRequestHeader("Content-Type", contentType);
       xhr.timeout = timeoutMs;
 
       xhr.upload.onprogress = (e) => {
@@ -323,19 +323,9 @@ export const uploadVideoDirect = async (
     throw new Error(initData.error || "Falha ao obter autorização para o vídeo.");
   }
 
-  // Start thumbnail generation + upload in parallel (non-fatal). This runs
-  // concurrently with the multipart upload so the upload begins immediately
-  // instead of waiting for the whole video to be decoded for the first frame.
-  const thumbPromise = (async () => {
-    try {
-      const thumbBlob = await createVideoThumbnail(file);
-      if (initData.thumbnailUploadUrl) await uploadThumbnail(thumbBlob, initData.thumbnailUploadUrl);
-    } catch (e) {
-      console.warn("Video thumbnail generation failed (non-fatal)", e);
-    }
-  })();
-
-  // Multipart upload of the video (starts right away -> progress appears instantly)
+  // Upload ONLY the original here. The first-frame thumbnail is generated
+  // AFTER this finishes (see below) so decoding the 150MB video on the main
+  // thread never blocks the upload progress or freezes the UI.
   const parts = await uploadFileMultipart(file, {
     partUrls: initData.partUrls,
     chunkSize: initData.chunkSize,
@@ -343,9 +333,6 @@ export const uploadVideoDirect = async (
     contentType,
     onProgress,
   });
-
-  // Ensure thumbnail is stored before finalizing (non-fatal)
-  await thumbPromise;
 
   const completeRes = await fetch("/api/upload/multipart-complete", {
     method: "POST",
@@ -356,6 +343,7 @@ export const uploadVideoDirect = async (
       uploadId: initData.uploadId,
       parts,
       kind: "video",
+      thumbnailReady: false,
       thumbnailKey: initData.thumbnailKey,
     }),
   });
@@ -364,6 +352,40 @@ export const uploadVideoDirect = async (
     throw new Error(completeData.error || "Falha ao registrar o vídeo no banco de dados.");
   }
 
+  // Deferred, non-blocking thumbnail generation. Runs after the call stack so
+  // the success UI paints first; the heavy decode won't freeze the upload.
+  const fotoId = completeData.foto?.id;
+  if (fotoId && initData.thumbnailUploadUrl) {
+    setTimeout(() => {
+      generateAndUploadVideoThumbnail(
+        file,
+        initData.thumbnailUploadUrl,
+        initData.thumbnailKey,
+        fotoId
+      ).catch((e) => console.warn("Video thumbnail deferred generation failed (non-fatal)", e));
+    }, 0);
+  }
+
   if (onProgress) onProgress(100);
   return completeData.foto;
+};
+
+/**
+ * Generates the first-frame thumbnail for a video and uploads it, then updates
+ * the database record. Intentionally run AFTER the main upload so decoding the
+ * video never blocks the upload progress or the UI.
+ */
+const generateAndUploadVideoThumbnail = async (
+  file: File,
+  thumbnailUploadUrl: string,
+  thumbnailKey: string,
+  fotoId: string
+): Promise<void> => {
+  const thumbBlob = await createVideoThumbnail(file);
+  await uploadThumbnail(thumbBlob, thumbnailUploadUrl);
+  await fetch("/api/upload/set-thumbnail", {
+    method: "POST",
+    headers: { "Content-Type": "application/json" },
+    body: JSON.stringify({ id: fotoId, thumbnailKey }),
+  });
 };

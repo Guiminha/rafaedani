@@ -435,7 +435,7 @@ app.post("/api/upload/multipart-init", async (req, res) => {
 });
 app.post("/api/upload/multipart-complete", async (req, res) => {
   try {
-    const { id, key, uploadId, parts, kind, thumbnailKey } = req.body || {};
+    const { id, key, uploadId, parts, kind, thumbnailKey, thumbnailReady } = req.body || {};
     if (!id || !key || !uploadId || !Array.isArray(parts) || parts.length === 0) {
       return res.status(400).json({ error: "Dados incompletos para finalizar o upload." });
     }
@@ -454,7 +454,7 @@ app.post("/api/upload/multipart-complete", async (req, res) => {
       }
     });
     await s3.send(command);
-    const finalThumbnailKey = thumbnailKey || key;
+    const finalThumbnailKey = thumbnailReady === true && thumbnailKey ? thumbnailKey : key;
     const { data, error } = await supabase.from("fotos").insert([{ id, url_original: key, url_thumbnail: finalThumbnailKey }]).select();
     if (error || !data || data.length === 0) {
       console.warn("Supabase insert warning on multipart complete:", error);
@@ -493,6 +493,26 @@ app.post("/api/upload/multipart-abort", async (req, res) => {
   } catch (err) {
     console.error("Multipart abort error:", err);
     res.status(500).json({ error: err.message || "Falha ao abortar upload." });
+  }
+});
+app.post("/api/upload/set-thumbnail", async (req, res) => {
+  try {
+    const { id, thumbnailKey } = req.body || {};
+    if (!id || !thumbnailKey) {
+      return res.status(400).json({ error: "id e thumbnailKey s\xE3o obrigat\xF3rios." });
+    }
+    if (!supabase) {
+      return res.status(500).json({ error: "Database not configured" });
+    }
+    const { error } = await supabase.from("fotos").update({ url_thumbnail: thumbnailKey }).eq("id", id);
+    if (error) {
+      console.error("set-thumbnail error:", error);
+      return res.status(500).json({ error: error.message || "Falha ao atualizar miniatura." });
+    }
+    res.status(200).json({ success: true });
+  } catch (err) {
+    console.error("set-thumbnail error:", err);
+    res.status(500).json({ error: err.message || "Falha ao atualizar miniatura." });
   }
 });
 app.get("/api/photos", async (req, res) => {

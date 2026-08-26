@@ -545,7 +545,7 @@ app.post("/api/upload/multipart-init", async (req, res): Promise<any> => {
 
 app.post("/api/upload/multipart-complete", async (req, res): Promise<any> => {
   try {
-    const { id, key, uploadId, parts, kind, thumbnailKey } = req.body || {};
+    const { id, key, uploadId, parts, kind, thumbnailKey, thumbnailReady } = req.body || {};
     if (!id || !key || !uploadId || !Array.isArray(parts) || parts.length === 0) {
       return res.status(400).json({ error: "Dados incompletos para finalizar o upload." });
     }
@@ -568,7 +568,9 @@ app.post("/api/upload/multipart-complete", async (req, res): Promise<any> => {
     });
     await s3.send(command);
 
-    const finalThumbnailKey = thumbnailKey || key;
+    // If the client deferred thumbnail generation (thumbnailReady=false), fall
+    // back to the original so the grid never shows a broken image.
+    const finalThumbnailKey = (thumbnailReady === true && thumbnailKey) ? thumbnailKey : key;
     const { data, error } = await (supabase as any)
       .from("fotos")
       .insert([{ id, url_original: key, url_thumbnail: finalThumbnailKey } as any])
@@ -613,6 +615,32 @@ app.post("/api/upload/multipart-abort", async (req, res): Promise<any> => {
   } catch (err: any) {
     console.error("Multipart abort error:", err);
     res.status(500).json({ error: err.message || "Falha ao abortar upload." });
+  }
+});
+
+// Updates the thumbnail of an already-uploaded photo/video (used when the
+// client defers video thumbnail generation to after the upload completes).
+app.post("/api/upload/set-thumbnail", async (req, res): Promise<any> => {
+  try {
+    const { id, thumbnailKey } = req.body || {};
+    if (!id || !thumbnailKey) {
+      return res.status(400).json({ error: "id e thumbnailKey são obrigatórios." });
+    }
+    if (!supabase) {
+      return res.status(500).json({ error: "Database not configured" });
+    }
+    const { error } = await (supabase as any)
+      .from("fotos")
+      .update({ url_thumbnail: thumbnailKey })
+      .eq("id", id);
+    if (error) {
+      console.error("set-thumbnail error:", error);
+      return res.status(500).json({ error: error.message || "Falha ao atualizar miniatura." });
+    }
+    res.status(200).json({ success: true });
+  } catch (err: any) {
+    console.error("set-thumbnail error:", err);
+    res.status(500).json({ error: err.message || "Falha ao atualizar miniatura." });
   }
 });
 

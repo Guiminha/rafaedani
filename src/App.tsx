@@ -17,6 +17,12 @@ const getDeviceId = () => {
   return id;
 };
 
+const isVideoFile = (f: File): boolean =>
+  f.type.startsWith("video/") || /\.(mp4|mov|webm|m4v)$/i.test(f.name);
+
+// Bump this on every deploy so we can confirm the live site is up to date.
+const APP_VERSION = "2026.08.25-b";
+
 export default function App() {
   const [photos, setPhotos] = useState<Foto[]>([]);
   const [loading, setLoading] = useState(true);
@@ -61,18 +67,37 @@ export default function App() {
     // Reset the input value so the same selection can be picked again later
     const inputEl = e.target;
     if (e.target.files && e.target.files.length > 0) {
-      const files = Array.from(e.target.files);
-      const remaining = 5 - selectedFiles.length;
-      if (remaining <= 0) {
-        showToast("Você só pode enviar até 5 arquivos por vez.");
+      const incoming = Array.from(e.target.files);
+      const currentVideos = selectedFiles.filter(isVideoFile).length;
+      const remainingTotal = 5 - selectedFiles.length;
+      if (remainingTotal <= 0) {
+        showToast("Você só pode enviar até 5 arquivos por envio.");
         inputEl.value = "";
         return;
       }
-      if (files.length > remaining) {
-        showToast("Você só pode enviar até 5 arquivos por vez.");
-        setSelectedFiles([...selectedFiles, ...files.slice(0, remaining)]);
-      } else {
-        setSelectedFiles([...selectedFiles, ...files]);
+      let videoSlots = 3 - currentVideos;
+      const accepted: File[] = [];
+      let hitVideoLimit = false;
+      for (const f of incoming) {
+        if (selectedFiles.length + accepted.length >= 5) break;
+        if (isVideoFile(f)) {
+          if (videoSlots <= 0) {
+            hitVideoLimit = true;
+            continue;
+          }
+          videoSlots--;
+          accepted.push(f);
+        } else {
+          accepted.push(f);
+        }
+      }
+      if (hitVideoLimit) {
+        showToast("Você só pode enviar até 3 vídeos por envio.");
+      } else if (accepted.length < incoming.length) {
+        showToast("Você só pode enviar até 5 arquivos por envio.");
+      }
+      if (accepted.length > 0) {
+        setSelectedFiles([...selectedFiles, ...accepted]);
       }
       setUploadStatus("idle");
       setOverallProgress(0);
@@ -129,7 +154,11 @@ export default function App() {
       setSelectedFiles([]);
       // Add new photos to the beginning of the list
       setPhotos((prev) => [...newPhotos.reverse(), ...prev]);
-      
+
+      // Refresh the gallery after a short delay so the (deferred) video
+      // thumbnails, generated after the upload finishes, show up.
+      setTimeout(() => fetchPhotos(), 20000);
+
       // Close modal smoothly after success
       setTimeout(() => {
         setIsModalOpen(false);
@@ -299,6 +328,7 @@ export default function App() {
             <Upload className="w-5 h-5" />
             Enviar Foto
           </button>
+          <div className="text-center text-[10px] text-neutral-600 mt-2">versão {APP_VERSION}</div>
         </div>
       </footer>
 
@@ -337,22 +367,35 @@ export default function App() {
                       : `${selectedFiles.length} arquivos selecionados`
                     : "Toque para escolher fotos"}
                 </span>
-                <span className={`mt-1 block text-xs font-semibold ${selectedFiles.length >= 5 ? "text-red-400" : "text-neutral-500"}`}>
-                  {selectedFiles.length} / 5 arquivos
-                </span>
-                <input 
-                  id="file-upload" 
-                  type="file" 
-                  accept="image/*,video/mp4,video/quicktime,video/webm" 
+                <div className="mt-1 flex flex-col items-center gap-0.5">
+                  <span className={`block text-xs font-semibold ${selectedFiles.length >= 5 ? "text-red-400" : "text-neutral-500"}`}>
+                    {selectedFiles.length} / 5 arquivos
+                  </span>
+                  <span className={`block text-xs font-semibold ${selectedFiles.filter(isVideoFile).length >= 3 ? "text-red-400" : "text-neutral-500"}`}>
+                    {selectedFiles.filter(isVideoFile).length} / 3 vídeos
+                  </span>
+                  <span className="block text-[10px] text-neutral-500 px-2 text-center">
+                    Você pode enviar mais depois, respeitando o limite de 5 envios a cada 10 minutos.
+                  </span>
+                </div>
+                <input
+                  id="file-upload"
+                  type="file"
+                  accept={selectedFiles.filter(isVideoFile).length >= 3 ? "image/*" : "image/*,video/mp4,video/quicktime,video/webm"}
                   multiple
-                className="hidden" 
-                   onChange={handleFileChange}
-                   disabled={uploading || selectedFiles.length >= 5}
-                 />
+                  className="hidden"
+                  onChange={handleFileChange}
+                  disabled={uploading || selectedFiles.length >= 5}
+                />
               </label>
               {selectedFiles.length >= 5 && (
                 <div className="mt-3 text-center text-sm text-red-400 font-semibold">
-                  Limite de 5 arquivos atingido.
+                  Limite de 5 arquivos por envio atingido.
+                </div>
+              )}
+              {selectedFiles.length < 5 && selectedFiles.filter(isVideoFile).length >= 3 && (
+                <div className="mt-3 text-center text-sm text-red-400 font-semibold">
+                  Limite de 3 vídeos por envio atingido.
                 </div>
               )}
               {uploading && (
