@@ -120,18 +120,22 @@ var minioPublicUrl = (process.env.MINIO_PUBLIC_URL || "").replace(/\/$/, "");
 var publicBaseUrl = minioPublicUrl.endsWith(`/${bucketName}`) ? minioPublicUrl : minioPublicUrl ? `${minioPublicUrl}/${bucketName}` : "";
 var upload = (0, import_multer.default)({ dest: import_os.default.tmpdir() });
 var deviceLimits = /* @__PURE__ */ new Map();
-function checkRateLimit(deviceId) {
+var RATE_LIMIT_WINDOW_MS = 10 * 60 * 1e3;
+var RATE_LIMIT_MAX_SUBMISSIONS = 5;
+var MAX_VIDEO_SIZE = 150 * 1024 * 1024;
+function checkRateLimit(deviceId, submissionId) {
   if (!deviceId) return true;
   const now = Date.now();
-  const limit = deviceLimits.get(deviceId);
-  if (!limit || now > limit.resetAt) {
-    deviceLimits.set(deviceId, { count: 1, resetAt: now + 10 * 60 * 1e3 });
-    return true;
+  let entry = deviceLimits.get(deviceId);
+  if (!entry || now > entry.resetAt) {
+    entry = { submissions: /* @__PURE__ */ new Set(), resetAt: now + RATE_LIMIT_WINDOW_MS };
+    deviceLimits.set(deviceId, entry);
   }
-  if (limit.count >= 15) {
+  if (submissionId && entry.submissions.has(submissionId)) return true;
+  if (entry.submissions.size >= RATE_LIMIT_MAX_SUBMISSIONS) {
     return false;
   }
-  limit.count++;
+  if (submissionId) entry.submissions.add(submissionId);
   return true;
 }
 app.post("/api/upload", upload.single("file"), async (req, res) => {
@@ -141,7 +145,7 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
   try {
     const deviceId = req.headers["x-device-id"];
     if (!checkRateLimit(deviceId)) {
-      return res.status(429).json({ error: "Limite de envios atingido. Aguarde 10 minutos." });
+      return res.status(429).json({ error: "Voc\xEA atingiu o limite de 5 envios. Aguarde 10 minutos para enviar novamente." });
     }
     if (!req.file) {
       return res.status(400).json({ error: "No file provided" });
@@ -216,9 +220,9 @@ app.post("/api/upload", upload.single("file"), async (req, res) => {
 });
 app.post("/api/photo/presigned", async (req, res) => {
   try {
-    const { deviceId, filename, originalContentType, thumbContentType = "image/webp" } = req.body || {};
-    if (!checkRateLimit(deviceId)) {
-      return res.status(429).json({ error: "Limite de envios atingido. Aguarde 10 minutos." });
+    const { deviceId, filename, originalContentType, thumbContentType = "image/webp", submissionId, size } = req.body || {};
+    if (!checkRateLimit(deviceId, submissionId)) {
+      return res.status(429).json({ error: "Voc\xEA atingiu o limite de 5 envios. Aguarde 10 minutos para enviar novamente." });
     }
     if (!s3 || !bucketName) {
       return res.status(500).json({ error: "Server storage not configured" });
@@ -297,12 +301,15 @@ app.post("/api/photo/finalize", async (req, res) => {
 });
 app.post("/api/video/presigned", async (req, res) => {
   try {
-    const { filename, contentType, deviceId } = req.body;
-    if (!checkRateLimit(deviceId)) {
-      return res.status(429).json({ error: "Limite de envios atingido. Aguarde 10 minutos." });
+    const { filename, contentType, deviceId, submissionId, size } = req.body || {};
+    if (!checkRateLimit(deviceId, submissionId)) {
+      return res.status(429).json({ error: "Voc\xEA atingiu o limite de 5 envios. Aguarde 10 minutos para enviar novamente." });
     }
     if (!contentType || !contentType.startsWith("video/")) {
       return res.status(400).json({ error: "Somente v\xEDdeos s\xE3o permitidos nesta rota." });
+    }
+    if (size && size > MAX_VIDEO_SIZE) {
+      return res.status(400).json({ error: "O v\xEDdeo excede o limite de 150MB." });
     }
     if (!s3 || !bucketName) {
       return res.status(500).json({ error: "Server storage not configured" });
@@ -310,13 +317,22 @@ app.post("/api/video/presigned", async (req, res) => {
     const uniqueId = (0, import_uuid.v4)();
     const ext = import_path.default.extname(filename) || ".mp4";
     const originalFileName = `originals/${uniqueId}_video${ext}`;
+    const thumbnailFileName = `thumbs/${uniqueId}_thumb.webp`;
     const command = new import_client_s3.PutObjectCommand({
       Bucket: bucketName,
       Key: originalFileName,
       ContentType: contentType
     });
-    const uploadUrl = await (0, import_s3_request_presigner.getSignedUrl)(s3, command, { expiresIn: 3600 });
-    res.status(200).json({ uploadUrl, key: originalFileName, id: uniqueId });
+    const thumbnailCommand = new import_client_s3.PutObjectCommand({
+      Bucket: bucketName,
+      Key: thumbnailFileName,
+      ContentType: "image/webp"
+    });
+    const [uploadUrl, thumbnailUploadUrl] = await Promise.all([
+      (0, import_s3_request_presigner.getSignedUrl)(s3, command, { expiresIn: 3600 }),
+      (0, import_s3_request_presigner.getSignedUrl)(s3, thumbnailCommand, { expiresIn: 3600 })
+    ]);
+    res.status(200).json({ uploadUrl, key: originalFileName, id: uniqueId, thumbnailUploadUrl, thumbnailKey: thumbnailFileName });
   } catch (err) {
     console.error("Presigned URL Error:", err);
     res.status(500).json({ error: err.message || "Failed to generate upload URL" });
@@ -324,7 +340,7 @@ app.post("/api/video/presigned", async (req, res) => {
 });
 app.post("/api/video/finalize", async (req, res) => {
   try {
-    const { id, key } = req.body;
+    const { id, key, thumbnailKey } = req.body;
     if (!id || !key) {
       return res.status(400).json({ error: "ID e Key s\xE3o obrigat\xF3rios" });
     }
@@ -335,8 +351,8 @@ app.post("/api/video/finalize", async (req, res) => {
       {
         id,
         url_original: key,
-        url_thumbnail: key
-        // For video, we will use the original video url and frontend will render <video>
+        url_thumbnail: thumbnailKey || key
+        // thumbnail is the first-frame image; falls back to original
       }
     ]).select();
     if (error || !data || data.length === 0) {

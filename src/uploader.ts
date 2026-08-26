@@ -50,6 +50,69 @@ export const createThumbnail = (file: File): Promise<Blob> => {
   });
 };
 
+/**
+ * Captures the first frame of a video as a 400x400 center-cropped WebP thumbnail.
+ * Falls back to the original file if the browser cannot decode the frame.
+ */
+export const createVideoThumbnail = (file: File): Promise<Blob> => {
+  return new Promise((resolve, reject) => {
+    const video = document.createElement("video");
+    const url = URL.createObjectURL(file);
+    video.src = url;
+    video.muted = true;
+    video.playsInline = true;
+    video.preload = "auto";
+    video.crossOrigin = "anonymous";
+
+    const cleanup = () => URL.revokeObjectURL(url);
+
+    video.onloadeddata = () => {
+      // Seek a tiny bit forward to avoid a black first frame on some codecs
+      try {
+        video.currentTime = Math.min(0.1, (video.duration || 1) / 2 || 0.1);
+      } catch {
+        /* ignore */
+      }
+    };
+
+    video.onseeked = () => {
+      try {
+        const vw = video.videoWidth || 400;
+        const vh = video.videoHeight || 400;
+        const minSide = Math.min(vw, vh);
+        const sx = (vw - minSide) / 2;
+        const sy = (vh - minSide) / 2;
+
+        const canvas = document.createElement("canvas");
+        canvas.width = 400;
+        canvas.height = 400;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) {
+          cleanup();
+          return resolve(file);
+        }
+        ctx.drawImage(video, sx, sy, minSide, minSide, 0, 0, 400, 400);
+        canvas.toBlob(
+          (blob) => {
+            cleanup();
+            resolve(blob || file);
+          },
+          "image/webp",
+          0.75
+        );
+      } catch (e) {
+        cleanup();
+        resolve(file);
+      }
+    };
+
+    video.onerror = () => {
+      cleanup();
+      reject(new Error("Não foi possível gerar a miniatura do vídeo."));
+    };
+  });
+};
+
 const safeJsonParse = async (res: Response): Promise<any> => {
   const text = await res.text();
   try {
@@ -69,7 +132,8 @@ const safeJsonParse = async (res: Response): Promise<any> => {
 export const uploadPhotoDirect = async (
   file: File,
   deviceId: string,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  submissionId?: string
 ): Promise<Foto> => {
   // 1. Generate thumbnail in memory (original file remains 100% untouched)
   const thumbBlob = await createThumbnail(file);
@@ -84,6 +148,8 @@ export const uploadPhotoDirect = async (
       filename: file.name,
       originalContentType,
       thumbContentType: "image/webp",
+      submissionId,
+      size: file.size,
     }),
   });
 
@@ -170,7 +236,8 @@ export const uploadPhotoDirect = async (
 export const uploadVideoDirect = async (
   file: File,
   deviceId: string,
-  onProgress?: (pct: number) => void
+  onProgress?: (pct: number) => void,
+  submissionId?: string
 ): Promise<Foto> => {
   const res = await fetch("/api/video/presigned", {
     method: "POST",
@@ -179,12 +246,22 @@ export const uploadVideoDirect = async (
       filename: file.name,
       contentType: file.type || "video/mp4",
       deviceId,
+      submissionId,
+      size: file.size,
     }),
   });
 
   const data = await safeJsonParse(res);
   if (!res.ok) {
     throw new Error(data.error || "Falha ao obter autorização para o vídeo.");
+  }
+
+  // Generate a lightweight first-frame thumbnail (non-fatal if unsupported)
+  let thumbBlob: Blob | null = null;
+  try {
+    thumbBlob = await createVideoThumbnail(file);
+  } catch (e) {
+    console.warn("Could not generate video thumbnail", e);
   }
 
   await new Promise<void>((resolve, reject) => {
@@ -194,7 +271,7 @@ export const uploadVideoDirect = async (
 
     xhr.upload.onprogress = (e) => {
       if (e.lengthComputable && onProgress) {
-        const pct = Math.round((e.loaded / e.total) * 95);
+        const pct = thumbBlob ? Math.round((e.loaded / e.total) * 80) : Math.round((e.loaded / e.total) * 95);
         onProgress(pct);
       }
     };
@@ -212,10 +289,31 @@ export const uploadVideoDirect = async (
     xhr.send(file);
   });
 
+  // Upload thumbnail (non-fatal)
+  if (thumbBlob) {
+    await new Promise<void>((resolve) => {
+      const xhr = new XMLHttpRequest();
+      xhr.open("PUT", data.thumbnailUploadUrl);
+      xhr.setRequestHeader("Content-Type", "image/webp");
+
+      xhr.onload = () => {
+        if (onProgress) onProgress(95);
+        resolve();
+      };
+      xhr.onerror = () => {
+        console.warn("Video thumbnail upload failed");
+        resolve();
+      };
+      xhr.send(thumbBlob);
+    });
+  } else if (onProgress) {
+    onProgress(95);
+  }
+
   const finalizeRes = await fetch("/api/video/finalize", {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({ id: data.id, key: data.key, deviceId }),
+    body: JSON.stringify({ id: data.id, key: data.key, thumbnailKey: data.thumbnailKey, deviceId }),
   });
 
   const finalizeData = await safeJsonParse(finalizeRes);

@@ -140,28 +140,34 @@ const publicBaseUrl = minioPublicUrl.endsWith(`/${bucketName}`)
 
 const upload = multer({ dest: os.tmpdir() });
 
-// Rate limit map
+// Rate limit map: 5 submissions (envios) per device every 10 minutes
 interface RateLimit {
-  count: number;
+  submissions: Set<string>;
   resetAt: number;
 }
 const deviceLimits = new Map<string, RateLimit>();
+const RATE_LIMIT_WINDOW_MS = 10 * 60 * 1000;
+const RATE_LIMIT_MAX_SUBMISSIONS = 5;
+const MAX_VIDEO_SIZE = 150 * 1024 * 1024; // 150MB
 
-function checkRateLimit(deviceId: string | undefined): boolean {
+function checkRateLimit(deviceId: string | undefined, submissionId?: string): boolean {
   if (!deviceId) return true; // allow if no device ID provided, though frontend should always provide it
   const now = Date.now();
-  const limit = deviceLimits.get(deviceId);
-  
-  if (!limit || now > limit.resetAt) {
-    deviceLimits.set(deviceId, { count: 1, resetAt: now + 10 * 60 * 1000 });
-    return true;
+  let entry = deviceLimits.get(deviceId);
+
+  if (!entry || now > entry.resetAt) {
+    entry = { submissions: new Set<string>(), resetAt: now + RATE_LIMIT_WINDOW_MS };
+    deviceLimits.set(deviceId, entry);
   }
-  
-  if (limit.count >= 15) { // 3 uploads of up to 5 files = 15 files per 10 mins
+
+  // Same submission (batch) already counted -> allow its remaining files
+  if (submissionId && entry.submissions.has(submissionId)) return true;
+
+  if (entry.submissions.size >= RATE_LIMIT_MAX_SUBMISSIONS) {
     return false;
   }
-  
-  limit.count++;
+
+  if (submissionId) entry.submissions.add(submissionId);
   return true;
 }
 
@@ -174,7 +180,7 @@ app.post("/api/upload", upload.single("file"), async (req, res): Promise<any> =>
   try {
     const deviceId = req.headers["x-device-id"] as string;
     if (!checkRateLimit(deviceId)) {
-      return res.status(429).json({ error: "Limite de envios atingido. Aguarde 10 minutos." });
+      return res.status(429).json({ error: "Você atingiu o limite de 5 envios. Aguarde 10 minutos para enviar novamente." });
     }
 
     if (!req.file) {
@@ -281,9 +287,9 @@ app.post("/api/upload", upload.single("file"), async (req, res): Promise<any> =>
 // Photo Presigned URL Endpoint (Direct S3 upload for instant speed & zero server memory, preserving 100% original quality)
 app.post("/api/photo/presigned", async (req, res): Promise<any> => {
   try {
-    const { deviceId, filename, originalContentType, thumbContentType = "image/webp" } = req.body || {};
-    if (!checkRateLimit(deviceId)) {
-      return res.status(429).json({ error: "Limite de envios atingido. Aguarde 10 minutos." });
+    const { deviceId, filename, originalContentType, thumbContentType = "image/webp", submissionId, size } = req.body || {};
+    if (!checkRateLimit(deviceId, submissionId)) {
+      return res.status(429).json({ error: "Você atingiu o limite de 5 envios. Aguarde 10 minutos para enviar novamente." });
     }
     if (!s3 || !bucketName) {
       return res.status(500).json({ error: "Server storage not configured" });
@@ -379,12 +385,15 @@ app.post("/api/photo/finalize", async (req, res): Promise<any> => {
 // Video Presigned URL Endpoint
 app.post("/api/video/presigned", async (req, res): Promise<any> => {
   try {
-    const { filename, contentType, deviceId } = req.body;
-    if (!checkRateLimit(deviceId)) {
-      return res.status(429).json({ error: "Limite de envios atingido. Aguarde 10 minutos." });
+    const { filename, contentType, deviceId, submissionId, size } = req.body || {};
+    if (!checkRateLimit(deviceId, submissionId)) {
+      return res.status(429).json({ error: "Você atingiu o limite de 5 envios. Aguarde 10 minutos para enviar novamente." });
     }
     if (!contentType || !contentType.startsWith("video/")) {
       return res.status(400).json({ error: "Somente vídeos são permitidos nesta rota." });
+    }
+    if (size && size > MAX_VIDEO_SIZE) {
+      return res.status(400).json({ error: "O vídeo excede o limite de 150MB." });
     }
     if (!s3 || !bucketName) {
       return res.status(500).json({ error: "Server storage not configured" });
@@ -393,16 +402,25 @@ app.post("/api/video/presigned", async (req, res): Promise<any> => {
     const uniqueId = uuidv4();
     const ext = path.extname(filename) || ".mp4";
     const originalFileName = `originals/${uniqueId}_video${ext}`;
+    const thumbnailFileName = `thumbs/${uniqueId}_thumb.webp`;
 
     const command = new PutObjectCommand({
       Bucket: bucketName,
       Key: originalFileName,
       ContentType: contentType
     });
-    
-    const uploadUrl = await getSignedUrl(s3, command, { expiresIn: 3600 });
-    
-    res.status(200).json({ uploadUrl, key: originalFileName, id: uniqueId });
+    const thumbnailCommand = new PutObjectCommand({
+      Bucket: bucketName,
+      Key: thumbnailFileName,
+      ContentType: "image/webp"
+    });
+
+    const [uploadUrl, thumbnailUploadUrl] = await Promise.all([
+      getSignedUrl(s3, command, { expiresIn: 3600 }),
+      getSignedUrl(s3, thumbnailCommand, { expiresIn: 3600 }),
+    ]);
+
+    res.status(200).json({ uploadUrl, key: originalFileName, id: uniqueId, thumbnailUploadUrl, thumbnailKey: thumbnailFileName });
   } catch (err: any) {
     console.error("Presigned URL Error:", err);
     res.status(500).json({ error: err.message || "Failed to generate upload URL" });
@@ -412,7 +430,7 @@ app.post("/api/video/presigned", async (req, res): Promise<any> => {
 // Video Finalize Endpoint
 app.post("/api/video/finalize", async (req, res): Promise<any> => {
   try {
-    const { id, key } = req.body;
+    const { id, key, thumbnailKey } = req.body;
     if (!id || !key) {
       return res.status(400).json({ error: "ID e Key são obrigatórios" });
     }
@@ -426,7 +444,7 @@ app.post("/api/video/finalize", async (req, res): Promise<any> => {
         {
           id: id,
           url_original: key,
-          url_thumbnail: key, // For video, we will use the original video url and frontend will render <video>
+          url_thumbnail: thumbnailKey || key, // thumbnail is the first-frame image; falls back to original
         } as any
       ])
       .select();

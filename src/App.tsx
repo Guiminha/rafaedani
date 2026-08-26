@@ -51,9 +51,9 @@ export default function App() {
   const handleFileChange = (e: React.ChangeEvent<HTMLInputElement>) => {
     if (e.target.files && e.target.files.length > 0) {
       const files = Array.from(e.target.files);
-      if (files.length > 10) {
-        alert("Você pode selecionar no máximo 10 arquivos por vez.");
-        setSelectedFiles(files.slice(0, 10));
+      if (files.length > 5) {
+        alert("Você pode selecionar no máximo 5 arquivos por vez.");
+        setSelectedFiles(files.slice(0, 5));
       } else {
         setSelectedFiles(files);
       }
@@ -72,7 +72,16 @@ export default function App() {
     
     const newPhotos: Foto[] = [];
     const deviceId = getDeviceId();
-    
+    const submissionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2);
+
+    // Validate all files before uploading anything
+    for (const file of selectedFiles) {
+      const isVideo = file.type.startsWith("video/") || file.name.match(/\.(mp4|mov|webm|m4v)$/i);
+      if (isVideo && file.size > 150 * 1024 * 1024) {
+        throw new Error(`O vídeo "${file.name}" excede o limite de 150MB.`);
+      }
+    }
+
     try {
       const totalFiles = selectedFiles.length;
       for (let i = 0; i < totalFiles; i++) {
@@ -88,11 +97,11 @@ export default function App() {
           if (file.size > 200 * 1024 * 1024) {
             throw new Error(`O vídeo ${file.name} ultrapassa o limite de 200MB.`);
           }
-          const foto = await uploadVideoDirect(file, deviceId, updateProgress);
+          const foto = await uploadVideoDirect(file, deviceId, updateProgress, submissionId);
           newPhotos.push(foto);
         } else {
           // Photo upload: 100% untouched original resolution & bit-for-bit quality
-          const foto = await uploadPhotoDirect(file, deviceId, updateProgress);
+          const foto = await uploadPhotoDirect(file, deviceId, updateProgress, submissionId);
           newPhotos.push(foto);
         }
       }
@@ -149,6 +158,7 @@ export default function App() {
           src={coverImageUrl} 
           alt="Capa do Casamento" 
           className="absolute inset-0 w-full h-full object-cover object-top z-0"
+          decoding="async"
         />
         <div className="absolute inset-0 z-20 flex items-end justify-center text-white drop-shadow-lg pb-6 sm:pb-8">
           <div className="flex flex-col items-center">
@@ -195,12 +205,32 @@ export default function App() {
               >
                 {foto.url_original.match(/\.(mp4|mov|webm)$/i) ? (
                   <>
-                    <video 
-                      src={foto.url_thumbnail} 
-                      className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 pointer-events-none"
-                      muted
-                      playsInline
-                    />
+                    {foto.url_thumbnail.match(/\.(webp|jpe?g|png|gif)$/i) ? (
+                      <img
+                        src={foto.url_thumbnail}
+                        alt="Momento do casamento"
+                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
+                        loading="lazy"
+                        decoding="async"
+                        onError={(e) => {
+                          const target = e.currentTarget;
+                          target.style.display = 'none';
+                          target.parentElement?.classList.add('flex', 'items-center', 'justify-center');
+                          target.parentElement?.setAttribute('title', 'Imagem bloqueada pelo MinIO (Bucket não é público)');
+                          const errorIcon = document.createElement('div');
+                          errorIcon.className = 'text-xs text-center text-neutral-500 p-2';
+                          errorIcon.innerHTML = '🔒<br/>Privado';
+                          target.parentElement?.appendChild(errorIcon);
+                        }}
+                      />
+                    ) : (
+                      <video
+                        src={foto.url_thumbnail}
+                        className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105 pointer-events-none"
+                        muted
+                        playsInline
+                      />
+                    )}
                     <div className="absolute inset-0 flex items-center justify-center bg-black/20 group-hover:bg-black/40 transition-colors duration-300">
                       <div className="w-10 h-10 rounded-full bg-black/50 flex items-center justify-center backdrop-blur-sm shadow-xl">
                         <div className="w-0 h-0 border-y-[6px] border-y-transparent border-l-[10px] border-l-white ml-1"></div>
@@ -214,6 +244,7 @@ export default function App() {
                       alt="Momento do casamento" 
                       className="w-full h-full object-cover transition-transform duration-300 group-hover:scale-105"
                       loading="lazy"
+                      decoding="async"
                       onError={(e) => {
                         const target = e.currentTarget;
                         target.style.display = 'none';
