@@ -51,18 +51,46 @@ app.get("/api/health", (req, res) => {
   );
 */
 
-// Initialize Supabase
+// Process-level crash prevention guards (vital for Passenger / Hostinger stability)
+process.on("uncaughtException", (err) => {
+  console.error("⚠️ Uncaught Exception in server process:", err);
+});
+process.on("unhandledRejection", (reason, promise) => {
+  console.error("⚠️ Unhandled Rejection at:", promise, "reason:", reason);
+});
+
+// Initialize Supabase (Supports SERVICE_ROLE_KEY, ANON_KEY or KEY)
 const supabaseUrl = process.env.SUPABASE_URL;
-const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY || process.env.SUPABASE_ANON_KEY || process.env.SUPABASE_KEY;
 let supabase: ReturnType<typeof createClient> | null = null;
 try {
   if (supabaseUrl && supabaseKey) {
-    supabase = createClient(supabaseUrl, supabaseKey);
+    supabase = createClient(supabaseUrl, supabaseKey, {
+      auth: {
+        persistSession: false,
+        autoRefreshToken: false,
+      }
+    });
+    console.log("✅ Supabase client initialized successfully.");
   } else {
-    console.warn("Supabase credentials are not set. Database operations will fail.");
+    console.warn("⚠️ Supabase credentials are not set. Database operations will run in memory fallback mode.");
   }
 } catch (err) {
   console.error("Failed to initialize Supabase:", err);
+}
+
+// Database table name helper (supports both 'fotos' and 'photos' seamlessly)
+async function getSupabaseTable(): Promise<string> {
+  if (!supabase) return "fotos";
+  try {
+    const { error: fotosErr } = await (supabase as any).from("fotos").select("id").limit(1);
+    if (!fotosErr) return "fotos";
+    const { error: photosErr } = await (supabase as any).from("photos").select("id").limit(1);
+    if (!photosErr) return "photos";
+  } catch (e) {
+    // default
+  }
+  return "fotos";
 }
 
 // Initialize S3/MinIO Client
@@ -622,7 +650,7 @@ app.delete("/api/admin/photos/:id", checkAdmin, async (req, res): Promise<any> =
 });
 
 async function startServer() {
-  // Vite middleware for development
+  // Vite middleware for development (always in dev mode)
   if (process.env.NODE_ENV !== "production") {
     const { createServer: createViteServer } = await import("vite");
     const vite = await createViteServer({
@@ -636,10 +664,8 @@ async function startServer() {
       path.join(__dirname, "dist"),
       path.join(__dirname, "../dist"),
       path.join(process.cwd(), "public_html"),
-      path.join(__dirname),
     ];
-    const distPath = possibleDistPaths.find((p) => fs.existsSync(path.join(p, "index.html"))) || possibleDistPaths[0];
-
+    const distPath = possibleDistPaths.find((p) => fs.existsSync(path.join(p, "index.html"))) || path.join(process.cwd(), "dist");
     console.log("Serving static production files from:", distPath);
     app.use(express.static(distPath));
     app.get("*", (req, res) => {
@@ -652,13 +678,14 @@ async function startServer() {
     });
   }
 
-  if (typeof PORT === "string" && isNaN(Number(PORT))) {
-    app.listen(PORT, () => {
-      console.log(`Server running on pipe/socket ${PORT}`);
+  const listenPort = process.env.PORT || 3000;
+  if (typeof listenPort === "string" && isNaN(Number(listenPort))) {
+    app.listen(listenPort, () => {
+      console.log(`Server running on pipe/socket ${listenPort}`);
     });
   } else {
-    app.listen(Number(PORT), "0.0.0.0", () => {
-      console.log(`Server running on port ${PORT}`);
+    app.listen(Number(listenPort) || 3000, "0.0.0.0", () => {
+      console.log(`Server running on port ${listenPort}`);
     });
   }
 }
