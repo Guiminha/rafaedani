@@ -18,10 +18,11 @@ const getDeviceId = () => {
 };
 
 const isVideoFile = (f: File): boolean =>
-  f.type.startsWith("video/") || /\.(mp4|mov|webm|m4v)$/i.test(f.name);
+  (f.type && f.type.startsWith("video/")) ||
+  /\.(mp4|mov|webm|m4v|mkv|avi|mpg|mpeg|wmv|flv|3gp|ogv)$/i.test(f.name);
 
 // Bump this on every deploy so we can confirm the live site is up to date.
-const APP_VERSION = "2026.08.25-b";
+const APP_VERSION = "2026.08.26-a";
 
 export default function App() {
   const [photos, setPhotos] = useState<Foto[]>([]);
@@ -126,17 +127,24 @@ export default function App() {
     }
 
     try {
-      const totalFiles = Math.min(selectedFiles.length, 5);
+      // Enforce limits at the upload level too (not only on selection):
+      // max 5 files total, of which at most 3 are videos.
+      const selectedVideos = selectedFiles.filter(isVideoFile).slice(0, 3);
+      const photoSlots = Math.max(0, 5 - selectedVideos.length);
+      const selectedPhotos = selectedFiles.filter((f) => !isVideoFile(f)).slice(0, photoSlots);
+      const filesToUpload = [...selectedVideos, ...selectedPhotos];
+
+      const totalFiles = filesToUpload.length;
       for (let i = 0; i < totalFiles; i++) {
-        const file = selectedFiles[i];
-        
+        const file = filesToUpload[i];
+
         const updateProgress = (filePct: number) => {
           const completedPortion = (i / totalFiles) * 100;
           const currentFilePortion = (filePct / 100) * (100 / totalFiles);
           setOverallProgress(Math.min(99, Math.round(completedPortion + currentFilePortion)));
         };
 
-        if (file.type.startsWith("video/") || file.name.match(/\.(mp4|mov|webm|m4v)$/i)) {
+        if (isVideoFile(file)) {
           if (file.size > 200 * 1024 * 1024) {
             throw new Error(`O vídeo ${file.name} ultrapassa o limite de 200MB.`);
           }

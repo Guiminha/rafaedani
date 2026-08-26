@@ -140,7 +140,7 @@ const uploadPart = (
   partNumber: number,
   contentType: string,
   onProgress?: (loaded: number) => void,
-  timeoutMs = 5 * 60 * 1000
+  timeoutMs = 50 * 60 * 1000
 ): Promise<string> => {
   return new Promise((resolve, reject) => {
     const attempt = (retriesLeft: number) => {
