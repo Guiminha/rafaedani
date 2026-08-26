@@ -68,24 +68,9 @@ export default function App() {
       inputEl.value = "";
       return;
     }
+    // Allow selecting as many files as the user wants. The upload step only
+    // sends the first 5 photos and the first 3 videos (see handleUpload).
     const incoming = Array.from(e.target.files);
-    const currentVideos = selectedFiles.filter(isVideoFile).length;
-    const remainingTotal = 5 - selectedFiles.length;
-    const videoSlots = 3 - currentVideos;
-    const incomingVideos = incoming.filter(isVideoFile).length;
-
-    const exceedsTotal = incoming.length > remainingTotal;
-    const exceedsVideos = incomingVideos > videoSlots;
-
-    if (exceedsTotal || exceedsVideos) {
-      const msg = exceedsVideos
-        ? "Você só pode enviar até 3 vídeos por envio."
-        : "Você só pode enviar até 5 arquivos por envio.";
-      showToast(`${msg} Selecione no máximo o permitido.`);
-      inputEl.value = "";
-      return;
-    }
-
     setSelectedFiles([...selectedFiles, ...incoming]);
     setUploadStatus("idle");
     setOverallProgress(0);
@@ -104,21 +89,13 @@ export default function App() {
     const deviceId = getDeviceId();
     const submissionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2);
 
-    // Validate all files before uploading anything
-    for (const file of selectedFiles) {
-      const isVideo = file.type.startsWith("video/") || file.name.match(/\.(mp4|mov|webm|m4v)$/i);
-      if (isVideo && file.size > 150 * 1024 * 1024) {
-        throw new Error(`O vídeo "${file.name}" excede o limite de 150MB.`);
-      }
-    }
-
     try {
-      // Enforce limits at the upload level too (not only on selection):
-      // max 5 files total, of which at most 3 are videos.
+      // The user may select as many files as they want, but each submission
+      // only uploads the first 5 photos and the first 3 videos (in selection
+      // order). Extras are simply ignored.
+      const selectedPhotos = selectedFiles.filter((f) => !isVideoFile(f)).slice(0, 5);
       const selectedVideos = selectedFiles.filter(isVideoFile).slice(0, 3);
-      const photoSlots = Math.max(0, 5 - selectedVideos.length);
-      const selectedPhotos = selectedFiles.filter((f) => !isVideoFile(f)).slice(0, photoSlots);
-      const filesToUpload = [...selectedVideos, ...selectedPhotos];
+      const filesToUpload = [...selectedPhotos, ...selectedVideos];
 
       const totalFiles = filesToUpload.length;
       for (let i = 0; i < totalFiles; i++) {
@@ -318,9 +295,8 @@ export default function App() {
               <X className="w-6 h-6" />
             </button>
             
-            <h3 className="text-xl font-semibold mb-2 text-white">Enviar nova foto</h3>
-            <p className="text-sm text-neutral-400 mb-6 text-center">
-              Você pode enviar até <span className="text-white font-semibold">5 arquivos</span> por envio (máx <span className="text-white font-semibold">3 vídeos</span>).
+            <p className="text-base text-neutral-300 mb-6 text-center font-medium px-2">
+              Você pode selecionar quantas fotos quiser — serão enviadas apenas as <span className="text-white font-semibold">primeiras 5 fotos</span> e até <span className="text-white font-semibold">3 vídeos</span> por envio.
             </p>
             
             <div className="mb-6">
@@ -343,11 +319,11 @@ export default function App() {
                     : "Toque para escolher fotos"}
                 </span>
                 <div className="mt-1 flex flex-col items-center gap-0.5">
-                  <span className={`block text-xs font-semibold ${selectedFiles.length >= 5 ? "text-red-400" : "text-neutral-500"}`}>
-                    {selectedFiles.length} / 5 arquivos
+                  <span className="block text-sm font-semibold text-neutral-300">
+                    {selectedFiles.length} selecionado{selectedFiles.length !== 1 ? "s" : ""}
                   </span>
-                  <span className={`block text-xs font-semibold ${selectedFiles.filter(isVideoFile).length >= 3 ? "text-red-400" : "text-neutral-500"}`}>
-                    {selectedFiles.filter(isVideoFile).length} / 3 vídeos
+                  <span className="block text-[11px] text-neutral-500 px-2 text-center">
+                    Serão enviadas as primeiras 5 fotos e até 3 vídeos.
                   </span>
                   <span className="block text-[10px] text-neutral-500 px-2 text-center">
                     Você pode enviar mais depois, respeitando o limite de 5 envios a cada 10 minutos.
@@ -356,23 +332,13 @@ export default function App() {
                 <input
                   id="file-upload"
                   type="file"
-                  accept={selectedFiles.filter(isVideoFile).length >= 3 ? "image/*" : "image/*,video/mp4,video/quicktime,video/webm"}
+                  accept="image/*,video/mp4,video/quicktime,video/webm"
                   multiple
                   className="hidden"
                   onChange={handleFileChange}
-                  disabled={uploading || selectedFiles.length >= 5}
+                  disabled={uploading}
                 />
               </label>
-              {selectedFiles.length >= 5 && (
-                <div className="mt-3 text-center text-sm text-red-400 font-semibold">
-                  Limite de 5 arquivos por envio atingido.
-                </div>
-              )}
-              {selectedFiles.length < 5 && selectedFiles.filter(isVideoFile).length >= 3 && (
-                <div className="mt-3 text-center text-sm text-red-400 font-semibold">
-                  Limite de 3 vídeos por envio atingido.
-                </div>
-              )}
               {uploading && (
                 <div className="mt-2 text-center text-xs text-neutral-500">
                   Enviando... {overallProgress}%
