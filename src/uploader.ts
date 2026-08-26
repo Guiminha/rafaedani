@@ -250,15 +250,18 @@ export const uploadPhotoDirect = async (
     throw new Error(initData.error || "Falha ao iniciar o envio da foto.");
   }
 
-  // Generate + upload thumbnail (non-fatal)
-  try {
-    const thumbBlob = await createThumbnail(file);
-    if (initData.thumbnailUploadUrl) await uploadThumbnail(thumbBlob, initData.thumbnailUploadUrl);
-  } catch (e) {
-    console.warn("Thumbnail generation failed (non-fatal)", e);
-  }
+  // Generate + upload thumbnail in parallel (non-fatal) so the original
+  // upload begins immediately instead of waiting for the image to decode.
+  const thumbPromise = (async () => {
+    try {
+      const thumbBlob = await createThumbnail(file);
+      if (initData.thumbnailUploadUrl) await uploadThumbnail(thumbBlob, initData.thumbnailUploadUrl);
+    } catch (e) {
+      console.warn("Thumbnail generation failed (non-fatal)", e);
+    }
+  })();
 
-  // Multipart upload of the original
+  // Multipart upload of the original (starts right away)
   const parts = await uploadFileMultipart(file, {
     partUrls: initData.partUrls,
     chunkSize: initData.chunkSize,
@@ -266,6 +269,9 @@ export const uploadPhotoDirect = async (
     contentType: originalContentType,
     onProgress,
   });
+
+  // Ensure thumbnail is stored before finalizing (non-fatal)
+  await thumbPromise;
 
   const completeRes = await fetch("/api/upload/multipart-complete", {
     method: "POST",
@@ -317,15 +323,19 @@ export const uploadVideoDirect = async (
     throw new Error(initData.error || "Falha ao obter autorização para o vídeo.");
   }
 
-  // Generate + upload first-frame thumbnail (non-fatal)
-  try {
-    const thumbBlob = await createVideoThumbnail(file);
-    if (initData.thumbnailUploadUrl) await uploadThumbnail(thumbBlob, initData.thumbnailUploadUrl);
-  } catch (e) {
-    console.warn("Video thumbnail generation failed (non-fatal)", e);
-  }
+  // Start thumbnail generation + upload in parallel (non-fatal). This runs
+  // concurrently with the multipart upload so the upload begins immediately
+  // instead of waiting for the whole video to be decoded for the first frame.
+  const thumbPromise = (async () => {
+    try {
+      const thumbBlob = await createVideoThumbnail(file);
+      if (initData.thumbnailUploadUrl) await uploadThumbnail(thumbBlob, initData.thumbnailUploadUrl);
+    } catch (e) {
+      console.warn("Video thumbnail generation failed (non-fatal)", e);
+    }
+  })();
 
-  // Multipart upload of the video
+  // Multipart upload of the video (starts right away -> progress appears instantly)
   const parts = await uploadFileMultipart(file, {
     partUrls: initData.partUrls,
     chunkSize: initData.chunkSize,
@@ -333,6 +343,9 @@ export const uploadVideoDirect = async (
     contentType,
     onProgress,
   });
+
+  // Ensure thumbnail is stored before finalizing (non-fatal)
+  await thumbPromise;
 
   const completeRes = await fetch("/api/upload/multipart-complete", {
     method: "POST",

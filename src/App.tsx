@@ -101,7 +101,7 @@ export default function App() {
     }
 
     try {
-      const totalFiles = selectedFiles.length;
+      const totalFiles = Math.min(selectedFiles.length, 5);
       for (let i = 0; i < totalFiles; i++) {
         const file = selectedFiles[i];
         
@@ -330,12 +330,15 @@ export default function App() {
                   ></div>
                 )}
                 <Camera className="w-10 h-10 text-[#3CA0CC]/70 group-hover:text-[#3CA0CC] transition-colors mb-3" />
-                <span className="text-sm text-neutral-400 text-center">
+                <span className="text-sm text-neutral-400 text-center block">
                   {selectedFiles.length > 0 
                     ? selectedFiles.length === 1 
                       ? selectedFiles[0].name 
-                      : `${selectedFiles.length} fotos selecionadas`
+                      : `${selectedFiles.length} arquivos selecionados`
                     : "Toque para escolher fotos"}
+                </span>
+                <span className={`mt-1 block text-xs font-semibold ${selectedFiles.length >= 5 ? "text-red-400" : "text-neutral-500"}`}>
+                  {selectedFiles.length} / 5 arquivos
                 </span>
                 <input 
                   id="file-upload" 
@@ -347,6 +350,11 @@ export default function App() {
                    disabled={uploading || selectedFiles.length >= 5}
                  />
               </label>
+              {selectedFiles.length >= 5 && (
+                <div className="mt-3 text-center text-sm text-red-400 font-semibold">
+                  Limite de 5 arquivos atingido.
+                </div>
+              )}
               {uploading && (
                 <div className="mt-2 text-center text-xs text-neutral-500">
                   Enviando... {overallProgress}%
@@ -425,29 +433,45 @@ export default function App() {
           {galleryPhotos[lightboxIndex].url_original.match(/\.(mp4|mov|webm)$/i) ? (
             <video 
               src={galleryPhotos[lightboxIndex].url_original} 
+              poster={galleryPhotos[lightboxIndex].url_thumbnail}
               controls
               autoPlay
-              className="max-w-full max-h-[90vh] object-contain select-none"
+              className="max-w-full max-h-[90vh] object-contain select-none bg-black"
               onClick={(e) => e.stopPropagation()}
             />
           ) : (
-            <img 
-              src={galleryPhotos[lightboxIndex].url_original} 
-              alt="Original" 
-              className="max-w-full max-h-[90vh] object-contain select-none"
-              onClick={(e) => e.stopPropagation()} // Prevent closing when clicking the image
-              onError={(e) => {
-                const target = e.currentTarget;
-                target.style.display = 'none';
-                const parent = target.parentElement;
-                if (parent && !parent.querySelector('.error-msg')) {
-                  const errorMsg = document.createElement('div');
-                  errorMsg.className = 'error-msg text-white text-center p-8 bg-neutral-900 rounded-lg';
-                  errorMsg.innerHTML = '<h3>🔒 Imagem Bloqueada</h3><p class="text-neutral-400 mt-2">O bucket do seu MinIO não permite leitura pública.</p>';
-                  parent.appendChild(errorMsg);
-                }
-              }}
-            />
+            <div 
+              className="relative max-w-full max-h-[90vh] flex items-center justify-center"
+              onClick={(e) => e.stopPropagation()}
+            >
+              {/* Instant blurred thumbnail placeholder (cached from grid) */}
+              <img 
+                src={galleryPhotos[lightboxIndex].url_thumbnail} 
+                alt="" 
+                aria-hidden
+                className="absolute inset-0 w-full h-full object-contain scale-110 blur-2xl opacity-60"
+              />
+              {/* Full original fades in once loaded */}
+              <img 
+                key={galleryPhotos[lightboxIndex].url_original}
+                src={galleryPhotos[lightboxIndex].url_original} 
+                alt="Original" 
+                className="relative max-w-full max-h-[90vh] object-contain select-none"
+                style={{ opacity: 0, transition: 'opacity 0.4s ease' }}
+                onLoad={(e) => { e.currentTarget.style.opacity = '1'; }}
+                onError={(e) => {
+                  const target = e.currentTarget;
+                  target.style.display = 'none';
+                  const parent = target.parentElement;
+                  if (parent && !parent.querySelector('.error-msg')) {
+                    const errorMsg = document.createElement('div');
+                    errorMsg.className = 'error-msg text-white text-center p-8 bg-neutral-900 rounded-lg';
+                    errorMsg.innerHTML = '<h3>🔒 Imagem Bloqueada</h3><p class="text-neutral-400 mt-2">O bucket do seu MinIO não permite leitura pública.</p>';
+                    parent.appendChild(errorMsg);
+                  }
+                }}
+              />
+            </div>
           )}
           
            {/* Counter */}
