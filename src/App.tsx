@@ -6,7 +6,7 @@
 import React, { useState, useEffect, useRef } from "react";
 import { Camera, X, Upload, CheckCircle2, AlertCircle, ChevronLeft, ChevronRight } from "lucide-react";
 import { Foto } from "./types";
-import { uploadPhotoDirect, uploadVideoDirect } from "./uploader";
+import { uploadPhotoDirect } from "./uploader";
 
 const getDeviceId = () => {
   let id = localStorage.getItem("deviceId");
@@ -68,9 +68,12 @@ export default function App() {
       inputEl.value = "";
       return;
     }
-    // Allow selecting as many files as the user wants. The upload step only
-    // sends the first 5 photos and the first 3 videos (see handleUpload).
-    const incoming = Array.from(e.target.files);
+    // Only accept photos (ignore any video files that sneak in).
+    const incoming = Array.from(e.target.files).filter((f) => !isVideoFile(f));
+    if (incoming.length === 0) {
+      inputEl.value = "";
+      return;
+    }
     setSelectedFiles([...selectedFiles, ...incoming]);
     setUploadStatus("idle");
     setOverallProgress(0);
@@ -90,12 +93,8 @@ export default function App() {
     const submissionId = crypto.randomUUID ? crypto.randomUUID() : Math.random().toString(36).substring(2);
 
     try {
-      // The user may select as many files as they want, but each submission
-      // only uploads the first 5 photos and the first 3 videos (in selection
-      // order). Extras are simply ignored.
-      const selectedPhotos = selectedFiles.filter((f) => !isVideoFile(f)).slice(0, 5);
-      const selectedVideos = selectedFiles.filter(isVideoFile).slice(0, 3);
-      const filesToUpload = [...selectedPhotos, ...selectedVideos];
+      // Photos only: upload the first 10 selected images (videos are ignored).
+      const filesToUpload = selectedFiles.filter((f) => !isVideoFile(f)).slice(0, 10);
 
       const totalFiles = filesToUpload.length;
       for (let i = 0; i < totalFiles; i++) {
@@ -107,17 +106,9 @@ export default function App() {
           setOverallProgress(Math.min(99, Math.round(completedPortion + currentFilePortion)));
         };
 
-        if (isVideoFile(file)) {
-          if (file.size > 200 * 1024 * 1024) {
-            throw new Error(`O vídeo ${file.name} ultrapassa o limite de 200MB.`);
-          }
-          const foto = await uploadVideoDirect(file, deviceId, updateProgress, submissionId);
-          newPhotos.push(foto);
-        } else {
-          // Photo upload: 100% untouched original resolution & bit-for-bit quality
-          const foto = await uploadPhotoDirect(file, deviceId, updateProgress, submissionId);
-          newPhotos.push(foto);
-        }
+        // Photo upload: 100% untouched original resolution & bit-for-bit quality
+        const foto = await uploadPhotoDirect(file, deviceId, updateProgress, submissionId);
+        newPhotos.push(foto);
       }
 
       setOverallProgress(100);
@@ -126,14 +117,11 @@ export default function App() {
       // Add new photos to the beginning of the list
       setPhotos((prev) => [...newPhotos.reverse(), ...prev]);
 
-      // Refresh the gallery after the deferred video thumbnails (generated
-      // ~1.5s after the upload finishes) have been stored, so they show up.
-      setTimeout(() => fetchPhotos(), 8000);
-
-      // Close modal smoothly after success
-      setTimeout(() => {
-        setIsModalOpen(false);
-      }, 600);
+      // Auto-close the upload screen right after finishing, returning the user
+      // to the home gallery where the new photos are already displayed.
+      setIsModalOpen(false);
+      setUploading(false);
+      setUploadStatus("idle");
     } catch (err: any) {
       console.error("Upload failed", err);
       setUploadStatus("error");
@@ -295,51 +283,44 @@ export default function App() {
               <X className="w-6 h-6" />
             </button>
             
-            <p className="text-base text-neutral-300 mb-6 text-center font-medium px-2">
-              Selecione até 5 fotos para enviar
+            <p className="text-base text-neutral-300 mb-4 text-center font-medium px-2">
+              Você pode enviar até 10 fotos por envio
+            </p>
+            <p className="text-xs text-neutral-500 mb-6 text-center">
+              Limite de 5 envios a cada 10 minutos.
             </p>
             
             <div className="mb-6">
               <label 
                 htmlFor="file-upload"
-                className="border-2 border-dashed border-neutral-700 rounded-xl p-8 flex flex-col items-center justify-center cursor-pointer hover:border-[#3CA0CC] hover:bg-[#3CA0CC]/10 transition-colors group relative overflow-hidden"
+                className="relative block cursor-pointer rounded-2xl bg-neutral-800/40 border-2 border-dashed border-neutral-700 hover:border-[#3CA0CC] hover:bg-[#3CA0CC]/10 transition-all duration-300 p-10 flex flex-col items-center justify-center text-center group"
               >
                 {uploading && (
                   <div 
-                    className="absolute bottom-0 left-0 h-1 bg-[#3CA0CC] transition-all duration-300 ease-out" 
+                    className="absolute bottom-0 left-0 h-1 bg-[#3CA0CC] transition-all duration-300 ease-out rounded-full" 
                     style={{ width: `${overallProgress}%` }}
                   ></div>
                 )}
-                <Camera className="w-10 h-10 text-[#3CA0CC]/70 group-hover:text-[#3CA0CC] transition-colors mb-3" />
-                <span className="text-sm text-neutral-400 text-center block">
-                  {selectedFiles.length > 0 
-                    ? selectedFiles.length === 1 
-                      ? selectedFiles[0].name 
-                      : `${selectedFiles.length} arquivos selecionados`
-                    : "Toque para escolher fotos"}
-                </span>
-                <div className="mt-1 flex flex-col items-center gap-0.5">
-                  <span className="block text-sm font-semibold text-neutral-300">
-                    {selectedFiles.length} selecionado{selectedFiles.length !== 1 ? "s" : ""}
-                  </span>
-                  {selectedFiles.filter((f) => !isVideoFile(f)).length > 5 && (
-                    <span className="block text-xs font-semibold text-red-400 px-2 text-center">
-                      Só 5 fotos permitidas por envio.
-                    </span>
-                  )}
-                  {selectedFiles.filter(isVideoFile).length > 3 && (
-                    <span className="block text-xs font-semibold text-red-400 px-2 text-center">
-                      Só 3 vídeos permitidos por envio.
-                    </span>
-                  )}
-                  <span className="block text-[10px] text-neutral-500 px-2 text-center">
-                    Você pode enviar mais depois, respeitando o limite de 5 envios a cada 10 minutos.
-                  </span>
+                <div className="w-16 h-16 rounded-full bg-[#3CA0CC]/15 flex items-center justify-center mb-4 transition-transform duration-300 group-hover:scale-110">
+                  <Camera className="w-8 h-8 text-[#3CA0CC]" />
                 </div>
+                {selectedFiles.length > 0 ? (
+                  <>
+                    <span className="text-sm font-semibold text-white">
+                      {selectedFiles.length} {selectedFiles.length === 1 ? "foto selecionada" : "fotos selecionadas"}
+                    </span>
+                    <span className="mt-1 text-xs text-neutral-400">Toque para adicionar mais</span>
+                  </>
+                ) : (
+                  <>
+                    <span className="text-sm font-semibold text-white">Toque para escolher suas fotos</span>
+                    <span className="mt-1 text-xs text-neutral-400">JPEG, PNG ou WebP</span>
+                  </>
+                )}
                 <input
                   id="file-upload"
                   type="file"
-                  accept="image/*,video/mp4,video/quicktime,video/webm"
+                  accept="image/*"
                   multiple
                   className="hidden"
                   onChange={handleFileChange}
@@ -347,7 +328,7 @@ export default function App() {
                 />
               </label>
               {uploading && (
-                <div className="mt-2 text-center text-xs text-neutral-500">
+                <div className="mt-3 text-center text-sm text-neutral-300 font-medium">
                   Enviando... {overallProgress}%
                 </div>
               )}
