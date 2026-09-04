@@ -34,13 +34,17 @@ export default function App() {
   // Lightbox state
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
 
-  // Transient toast (auto-dismiss)
+  // Transient toast (auto-dismiss after 5s, with a close button)
   const [toast, setToast] = useState<string | null>(null);
   const toastTimer = useRef<number | null>(null);
   const showToast = (msg: string) => {
     if (toastTimer.current) window.clearTimeout(toastTimer.current);
     setToast(msg);
-    toastTimer.current = window.setTimeout(() => setToast(null), 1500);
+    toastTimer.current = window.setTimeout(() => setToast(null), 5000);
+  };
+  const dismissToast = () => {
+    if (toastTimer.current) window.clearTimeout(toastTimer.current);
+    setToast(null);
   };
 
   useEffect(() => {
@@ -71,6 +75,14 @@ export default function App() {
     // Only accept photos (ignore any video files that sneak in).
     const incoming = Array.from(e.target.files).filter((f) => !isVideoFile(f));
     if (incoming.length === 0) {
+      inputEl.value = "";
+      return;
+    }
+    const totalAfter = selectedFiles.length + incoming.length;
+    if (totalAfter > 10) {
+      // Reset the selection so the user picks again, and warn about the limit.
+      setSelectedFiles([]);
+      showToast("Você só pode enviar até 10 fotos por envio. Selecione novamente.");
       inputEl.value = "";
       return;
     }
@@ -455,8 +467,15 @@ export default function App() {
 
       {/* Transient toast */}
       {toast && (
-        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] bg-red-900/90 text-red-100 text-sm px-4 py-2 rounded-xl shadow-lg border border-red-700">
-          {toast}
+        <div className="fixed top-4 left-1/2 -translate-x-1/2 z-[80] bg-red-900/95 text-red-100 text-sm px-4 py-2 rounded-xl shadow-lg border border-red-700 flex items-center gap-3 max-w-[90vw]">
+          <span>{toast}</span>
+          <button
+            onClick={dismissToast}
+            className="shrink-0 w-5 h-5 rounded-full bg-red-800/60 hover:bg-red-700 text-red-100 flex items-center justify-center text-xs"
+            aria-label="Fechar"
+          >
+            <X className="w-3 h-3" />
+          </button>
         </div>
       )}
     </div>
