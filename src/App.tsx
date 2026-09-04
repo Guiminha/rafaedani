@@ -419,22 +419,24 @@ export default function App() {
               className="relative max-w-full max-h-[90vh] flex items-center justify-center"
               onClick={(e) => e.stopPropagation()}
             >
-              {/* Instant blurred thumbnail placeholder (cached from grid) */}
+              {/* Instant thumbnail (already cached from grid), no blur */}
               <img 
                 src={galleryPhotos[lightboxIndex].url_thumbnail} 
                 alt="" 
                 aria-hidden
-                className="absolute inset-0 w-full h-full object-contain scale-110 blur-2xl opacity-60"
+                className="absolute inset-0 w-full h-full object-contain"
               />
-              {/* Full view image (1080p) fades in once loaded */}
+              {/* Full view image fades in once loaded */}
               <img 
                 key={galleryPhotos[lightboxIndex].url_view || galleryPhotos[lightboxIndex].url_original}
                 src={galleryPhotos[lightboxIndex].url_view || galleryPhotos[lightboxIndex].url_original} 
-                alt="Original" 
+                alt="Foto" 
+                decoding="async"
                 className="relative max-w-full max-h-[90vh] object-contain select-none"
-                style={{ opacity: 0, transition: 'opacity 0.4s ease' }}
+                style={{ opacity: 0, transition: 'opacity 0.25s ease' }}
                 onLoad={(e) => { e.currentTarget.style.opacity = '1'; }}
                 onError={(e) => {
+                  e.currentTarget.style.opacity = '1';
                   const target = e.currentTarget;
                   target.style.display = 'none';
                   const parent = target.parentElement;

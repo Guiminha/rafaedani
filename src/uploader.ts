@@ -65,7 +65,7 @@ export const createViewImage = (file: File): Promise<Blob> => {
       try {
         const origWidth = img.naturalWidth || img.width;
         const origHeight = img.naturalHeight || img.height;
-        const MAX_W = 1920;
+        const MAX_W = 1600;
         let w = origWidth;
         let h = origHeight;
         if (w > MAX_W) {
@@ -83,7 +83,7 @@ export const createViewImage = (file: File): Promise<Blob> => {
         canvas.toBlob(
           (blob) => resolve(blob || file),
           "image/webp",
-          0.85
+          0.75
         );
       } catch (e) {
         console.warn("Could not generate view image, falling back to original", e);
