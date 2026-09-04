@@ -30,6 +30,7 @@ export default function App() {
   const [selectedFiles, setSelectedFiles] = useState<File[]>([]);
   const [overallProgress, setOverallProgress] = useState(0);
   const [errorMessage, setErrorMessage] = useState("");
+  const [limitMessage, setLimitMessage] = useState<string | null>(null);
 
   // Lightbox state
   const [lightboxIndex, setLightboxIndex] = useState<number | null>(null);
@@ -82,10 +83,12 @@ export default function App() {
     if (totalAfter > 10) {
       // Reset the selection so the user picks again, and warn about the limit.
       setSelectedFiles([]);
+      setLimitMessage("Você só pode enviar até 10 fotos por envio. Selecione novamente.");
       showToast("Você só pode enviar até 10 fotos por envio. Selecione novamente.");
       inputEl.value = "";
       return;
     }
+    setLimitMessage(null);
     setSelectedFiles([...selectedFiles, ...incoming]);
     setUploadStatus("idle");
     setOverallProgress(0);
@@ -272,6 +275,7 @@ export default function App() {
               setIsModalOpen(true);
               setUploadStatus("idle");
               setSelectedFiles([]);
+              setLimitMessage(null);
             }}
             className="w-full h-14 bg-[#3CA0CC] hover:bg-[#348db4] text-white font-bold rounded-2xl shadow-lg shadow-[#3CA0CC]/30 active:scale-95 transition-all text-lg flex items-center justify-center gap-2"
           >
@@ -342,6 +346,12 @@ export default function App() {
               {uploading && (
                 <div className="mt-3 text-center text-sm text-neutral-300 font-medium">
                   Enviando... {overallProgress}%
+                </div>
+              )}
+              {limitMessage && (
+                <div className="mt-3 p-3 bg-amber-900/30 border border-amber-700 text-amber-300 rounded-lg flex items-center gap-2 text-sm">
+                  <AlertCircle className="w-5 h-5 shrink-0" />
+                  {limitMessage}
                 </div>
               )}
             </div>
