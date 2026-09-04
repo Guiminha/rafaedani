@@ -427,6 +427,16 @@ app.post("/api/upload/multipart-init", async (req, res) => {
     });
     response.thumbnailUploadUrl = await (0, import_s3_request_presigner.getSignedUrl)(s3, thumbCommand, { expiresIn: 3600 });
     response.thumbnailKey = thumbnailKey;
+    if (kind === "photo") {
+      const viewKey = `thumbs/${uniqueId}_view.webp`;
+      const viewCommand = new import_client_s3.PutObjectCommand({
+        Bucket: bucketName,
+        Key: viewKey,
+        ContentType: "image/webp"
+      });
+      response.viewUploadUrl = await (0, import_s3_request_presigner.getSignedUrl)(s3, viewCommand, { expiresIn: 3600 });
+      response.viewKey = viewKey;
+    }
     res.status(200).json(response);
   } catch (err) {
     console.error("Multipart init error:", err);
@@ -435,7 +445,7 @@ app.post("/api/upload/multipart-init", async (req, res) => {
 });
 app.post("/api/upload/multipart-complete", async (req, res) => {
   try {
-    const { id, key, uploadId, parts, kind, thumbnailKey, thumbnailReady } = req.body || {};
+    const { id, key, uploadId, parts, kind, thumbnailKey, thumbnailReady, viewKey, viewReady } = req.body || {};
     if (!id || !key || !uploadId || !Array.isArray(parts) || parts.length === 0) {
       return res.status(400).json({ error: "Dados incompletos para finalizar o upload." });
     }
@@ -455,7 +465,8 @@ app.post("/api/upload/multipart-complete", async (req, res) => {
     });
     await s3.send(command);
     const finalThumbnailKey = thumbnailReady === true && thumbnailKey ? thumbnailKey : key;
-    const { data, error } = await supabase.from("fotos").insert([{ id, url_original: key, url_thumbnail: finalThumbnailKey }]).select();
+    const finalViewKey = viewReady === true && viewKey ? viewKey : key;
+    const { data, error } = await supabase.from("fotos").insert([{ id, url_original: key, url_thumbnail: finalThumbnailKey, url_view: finalViewKey }]).select();
     if (error || !data || data.length === 0) {
       console.warn("Supabase insert warning on multipart complete:", error);
       return res.status(200).json({
@@ -464,6 +475,7 @@ app.post("/api/upload/multipart-complete", async (req, res) => {
           id,
           url_original: `${publicBaseUrl}/${key}`,
           url_thumbnail: `${publicBaseUrl}/${finalThumbnailKey}`,
+          url_view: `${publicBaseUrl}/${finalViewKey}`,
           data_upload: (/* @__PURE__ */ new Date()).toISOString()
         }
       });
@@ -471,7 +483,8 @@ app.post("/api/upload/multipart-complete", async (req, res) => {
     const responseFoto = {
       ...data[0],
       url_original: `${publicBaseUrl}/${data[0].url_original}`,
-      url_thumbnail: `${publicBaseUrl}/${data[0].url_thumbnail}`
+      url_thumbnail: `${publicBaseUrl}/${data[0].url_thumbnail}`,
+      url_view: data[0].url_view ? `${publicBaseUrl}/${data[0].url_view}` : `${publicBaseUrl}/${data[0].url_original}`
     };
     res.status(200).json({ success: true, foto: responseFoto });
   } catch (err) {
@@ -555,16 +568,20 @@ app.get("/api/photos", async (req, res) => {
     const processedData = data.map((foto) => {
       const isAbsoluteOriginal = foto.url_original?.startsWith("http");
       const isAbsoluteThumbnail = foto.url_thumbnail?.startsWith("http");
+      const isAbsoluteView = foto.url_view?.startsWith("http");
       let orig = isAbsoluteOriginal ? foto.url_original : `${publicBaseUrl}/${foto.url_original}`;
       let thumb = isAbsoluteThumbnail ? foto.url_thumbnail : `${publicBaseUrl}/${foto.url_thumbnail}`;
+      let view = foto.url_view ? isAbsoluteView ? foto.url_view : `${publicBaseUrl}/${foto.url_view}` : orig;
       if (foto.url_original === "RafaeDani.webp") {
         orig = `${publicBaseUrl}/RafaeDani.webp`;
         thumb = `${publicBaseUrl}/RafaeDani.webp`;
+        view = `${publicBaseUrl}/RafaeDani.webp`;
       }
       return {
         ...foto,
         url_original: orig,
-        url_thumbnail: thumb
+        url_thumbnail: thumb,
+        url_view: view
       };
     });
     res.status(200).json(processedData);

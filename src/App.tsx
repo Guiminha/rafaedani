@@ -426,10 +426,10 @@ export default function App() {
                 aria-hidden
                 className="absolute inset-0 w-full h-full object-contain scale-110 blur-2xl opacity-60"
               />
-              {/* Full original fades in once loaded */}
+              {/* Full view image (1080p) fades in once loaded */}
               <img 
-                key={galleryPhotos[lightboxIndex].url_original}
-                src={galleryPhotos[lightboxIndex].url_original} 
+                key={galleryPhotos[lightboxIndex].url_view || galleryPhotos[lightboxIndex].url_original}
+                src={galleryPhotos[lightboxIndex].url_view || galleryPhotos[lightboxIndex].url_original} 
                 alt="Original" 
                 className="relative max-w-full max-h-[90vh] object-contain select-none"
                 style={{ opacity: 0, transition: 'opacity 0.4s ease' }}

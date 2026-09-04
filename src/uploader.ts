@@ -51,6 +51,56 @@ export const createThumbnail = (file: File): Promise<Blob> => {
 };
 
 /**
+ * Creates a high-quality "view" image (1920px / ~1080p) heavily compressed to
+ * WebP for lightbox display. The original file is NOT altered - it is stored
+ * untouched in MinIO.
+ */
+export const createViewImage = (file: File): Promise<Blob> => {
+  return new Promise((resolve) => {
+    const img = new Image();
+    const url = URL.createObjectURL(file);
+
+    img.onload = () => {
+      URL.revokeObjectURL(url);
+      try {
+        const origWidth = img.naturalWidth || img.width;
+        const origHeight = img.naturalHeight || img.height;
+        const MAX_W = 1920;
+        let w = origWidth;
+        let h = origHeight;
+        if (w > MAX_W) {
+          h = Math.round((h * MAX_W) / w);
+          w = MAX_W;
+        }
+
+        const canvas = document.createElement("canvas");
+        canvas.width = w;
+        canvas.height = h;
+        const ctx = canvas.getContext("2d");
+        if (!ctx) return resolve(file);
+
+        ctx.drawImage(img, 0, 0, w, h);
+        canvas.toBlob(
+          (blob) => resolve(blob || file),
+          "image/webp",
+          0.85
+        );
+      } catch (e) {
+        console.warn("Could not generate view image, falling back to original", e);
+        resolve(file);
+      }
+    };
+
+    img.onerror = () => {
+      URL.revokeObjectURL(url);
+      resolve(file);
+    };
+
+    img.src = url;
+  });
+};
+
+/**
  * Captures the first frame of a video as a 400x400 center-cropped WebP thumbnail.
  * Falls back to the original file if the browser cannot decode the frame.
  */
@@ -250,14 +300,24 @@ export const uploadPhotoDirect = async (
     throw new Error(initData.error || "Falha ao iniciar o envio da foto.");
   }
 
-  // Generate + upload thumbnail in parallel (non-fatal) so the original
-  // upload begins immediately instead of waiting for the image to decode.
+  // Generate + upload thumbnail (400px) and view image (1920px) in parallel
+  // (non-fatal) so the original upload begins immediately. The original file is
+  // always uploaded untouched - these only produce the display versions.
   const thumbPromise = (async () => {
     try {
       const thumbBlob = await createThumbnail(file);
       if (initData.thumbnailUploadUrl) await uploadThumbnail(thumbBlob, initData.thumbnailUploadUrl);
     } catch (e) {
       console.warn("Thumbnail generation failed (non-fatal)", e);
+    }
+  })();
+
+  const viewPromise = (async () => {
+    try {
+      const viewBlob = await createViewImage(file);
+      if (initData.viewUploadUrl) await uploadThumbnail(viewBlob, initData.viewUploadUrl);
+    } catch (e) {
+      console.warn("View image generation failed (non-fatal)", e);
     }
   })();
 
@@ -270,8 +330,8 @@ export const uploadPhotoDirect = async (
     onProgress,
   });
 
-  // Ensure thumbnail is stored before finalizing (non-fatal)
-  await thumbPromise;
+  // Ensure the display versions are stored before finalizing (non-fatal)
+  await Promise.all([thumbPromise, viewPromise]);
 
   const completeRes = await fetch("/api/upload/multipart-complete", {
     method: "POST",
@@ -283,6 +343,9 @@ export const uploadPhotoDirect = async (
       parts,
       kind: "photo",
       thumbnailKey: initData.thumbnailKey,
+      thumbnailReady: true,
+      viewKey: initData.viewKey,
+      viewReady: true,
     }),
   });
   const completeData = await safeJsonParse(completeRes);

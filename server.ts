@@ -526,7 +526,7 @@ app.post("/api/upload/multipart-init", async (req, res): Promise<any> => {
       totalParts,
     };
 
-    // Both photos and videos get a single-PUT presigned URL for a (small) thumbnail
+    // Small thumbnail (400px) for the fast grid
     const thumbnailKey = `thumbs/${uniqueId}_thumb.webp`;
     const thumbCommand = new PutObjectCommand({
       Bucket: bucketName,
@@ -535,6 +535,19 @@ app.post("/api/upload/multipart-init", async (req, res): Promise<any> => {
     });
     response.thumbnailUploadUrl = await getSignedUrl(s3, thumbCommand, { expiresIn: 3600 });
     response.thumbnailKey = thumbnailKey;
+
+    // High-quality view image (1920px / "1080p") for the lightbox, while the
+    // original stays untouched in MinIO. Only photos get this.
+    if (kind === "photo") {
+      const viewKey = `thumbs/${uniqueId}_view.webp`;
+      const viewCommand = new PutObjectCommand({
+        Bucket: bucketName,
+        Key: viewKey,
+        ContentType: "image/webp",
+      });
+      response.viewUploadUrl = await getSignedUrl(s3, viewCommand, { expiresIn: 3600 });
+      response.viewKey = viewKey;
+    }
 
     res.status(200).json(response);
   } catch (err: any) {
@@ -545,7 +558,7 @@ app.post("/api/upload/multipart-init", async (req, res): Promise<any> => {
 
 app.post("/api/upload/multipart-complete", async (req, res): Promise<any> => {
   try {
-    const { id, key, uploadId, parts, kind, thumbnailKey, thumbnailReady } = req.body || {};
+    const { id, key, uploadId, parts, kind, thumbnailKey, thumbnailReady, viewKey, viewReady } = req.body || {};
     if (!id || !key || !uploadId || !Array.isArray(parts) || parts.length === 0) {
       return res.status(400).json({ error: "Dados incompletos para finalizar o upload." });
     }
@@ -571,9 +584,11 @@ app.post("/api/upload/multipart-complete", async (req, res): Promise<any> => {
     // If the client deferred thumbnail generation (thumbnailReady=false), fall
     // back to the original so the grid never shows a broken image.
     const finalThumbnailKey = (thumbnailReady === true && thumbnailKey) ? thumbnailKey : key;
+    // The 1080p view image; falls back to the original if not provided.
+    const finalViewKey = (viewReady === true && viewKey) ? viewKey : key;
     const { data, error } = await (supabase as any)
       .from("fotos")
-      .insert([{ id, url_original: key, url_thumbnail: finalThumbnailKey } as any])
+      .insert([{ id, url_original: key, url_thumbnail: finalThumbnailKey, url_view: finalViewKey } as any])
       .select();
 
     if (error || !data || data.length === 0) {
@@ -584,6 +599,7 @@ app.post("/api/upload/multipart-complete", async (req, res): Promise<any> => {
           id,
           url_original: `${publicBaseUrl}/${key}`,
           url_thumbnail: `${publicBaseUrl}/${finalThumbnailKey}`,
+          url_view: `${publicBaseUrl}/${finalViewKey}`,
           data_upload: new Date().toISOString(),
         },
       });
@@ -593,6 +609,7 @@ app.post("/api/upload/multipart-complete", async (req, res): Promise<any> => {
       ...data[0],
       url_original: `${publicBaseUrl}/${data[0].url_original}`,
       url_thumbnail: `${publicBaseUrl}/${data[0].url_thumbnail}`,
+      url_view: data[0].url_view ? `${publicBaseUrl}/${data[0].url_view}` : `${publicBaseUrl}/${data[0].url_original}`,
     };
     res.status(200).json({ success: true, foto: responseFoto });
   } catch (err: any) {
@@ -705,19 +722,26 @@ app.get("/api/photos", async (req, res): Promise<any> => {
       .map((foto: any) => {
       const isAbsoluteOriginal = foto.url_original?.startsWith("http");
       const isAbsoluteThumbnail = foto.url_thumbnail?.startsWith("http");
+      const isAbsoluteView = foto.url_view?.startsWith("http");
       
       let orig = isAbsoluteOriginal ? foto.url_original : `${publicBaseUrl}/${foto.url_original}`;
       let thumb = isAbsoluteThumbnail ? foto.url_thumbnail : `${publicBaseUrl}/${foto.url_thumbnail}`;
+      // View (1080p) image; falls back to the original when not present.
+      let view = foto.url_view
+        ? (isAbsoluteView ? foto.url_view : `${publicBaseUrl}/${foto.url_view}`)
+        : orig;
       
       if (foto.url_original === "RafaeDani.webp") {
         orig = `${publicBaseUrl}/RafaeDani.webp`;
         thumb = `${publicBaseUrl}/RafaeDani.webp`;
+        view = `${publicBaseUrl}/RafaeDani.webp`;
       }
 
       return {
         ...foto,
         url_original: orig,
         url_thumbnail: thumb,
+        url_view: view,
       };
     });
 
